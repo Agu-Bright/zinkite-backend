@@ -1,0 +1,123 @@
+# Compiled output
+/dist
+/node_modules
+/build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env*.local
+
+# Keep example env
+!.env.example
+
+# Temporary files
+*.tmp
+*.temp
+.temp
+.tmp
+
+# Cache
+.cache
+.npm
+.eslintcache
+.node_repl_history
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional stylelint cache
+.stylelintcache
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn
+.yarn-integrity
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# dotenv environment variable files
+.env
+.env.development
+.env.test
+.env.production
+
+# TypeScript cache
+*.tsbuildinfo
+
+# NestJS specific
+.nestjs
+
+# Debug
+debug.log
+
+# Uploads (if storing locally)
+/uploads
+/temp
+
+# Secrets
+*.pem
+*.key
+secrets/
+
+# Database
+*.sqlite
+*.sqlite3
+data/
+
+# PM2
+ecosystem.config.js
+
+# Docker
+docker-compose.override.yml
