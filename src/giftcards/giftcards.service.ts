@@ -53,9 +53,6 @@ import {
   CalculatedRateResponse,
 } from './dto';
 import { generateReference, paginate, calculateSkip, toKobo, toNaira } from '../common/utils/helpers';
-import { NotificationsService } from '../notifications/notifications.service';
-import { NotificationType } from '../notifications/schemas/user-notification.schema';
-import { EmailService } from '../email/email.service';
 import { PaginatedResult } from '../common/dto/pagination.dto';
 
 @Injectable()
@@ -74,8 +71,6 @@ export class GiftCardsService implements OnModuleInit {
     @InjectConnection()
     private readonly connection: Connection,
     private readonly walletService: WalletService,
-    private readonly notificationsService: NotificationsService,
-    private readonly emailService: EmailService,
   ) {}
 
   /**
@@ -790,44 +785,6 @@ export class GiftCardsService implements OnModuleInit {
         .populate('brandId', 'name slug logoUrl')
         .populate('categoryId', 'name slug cardType')
         .populate('reviewedBy', 'email fullName');
-
-      // Send push notification to user (best-effort, outside transaction)
-      const userId = trade.userId.toString();
-      const brandName = (populated?.brandId as any)?.name || 'Gift Card';
-      if (dto.status === TradeStatus.APPROVED) {
-        const creditedNaira = toNaira(dto.adjustedAmountNgn ?? trade.amountNgn);
-        this.notificationsService.sendToUser(
-          userId,
-          'Trade Approved!',
-          `Your ${brandName} trade has been approved. ₦${creditedNaira.toLocaleString()} has been credited to your wallet.`,
-          { type: 'trade_review', tradeId: trade._id.toString() },
-          NotificationType.TRADE,
-        ).catch(err => this.logger.error(`Failed to send trade approval notification: ${err.message}`));
-
-        // Send email notification
-        const userEmail = (populated?.userId as any)?.email;
-        if (userEmail) {
-          this.emailService.sendTradeApproved(
-            userEmail, brandName, trade.cardValueUsd, toNaira(dto.adjustedAmountNgn ?? trade.amountNgn), trade.reference,
-          ).catch(err => this.logger.error(`Failed to send trade approval email: ${err.message}`));
-        }
-      } else if (dto.status === TradeStatus.REJECTED) {
-        this.notificationsService.sendToUser(
-          userId,
-          'Trade Rejected',
-          `Your ${brandName} trade was rejected. Reason: ${dto.rejectionReason || 'No reason provided'}`,
-          { type: 'trade_review', tradeId: trade._id.toString() },
-          NotificationType.TRADE,
-        ).catch(err => this.logger.error(`Failed to send trade rejection notification: ${err.message}`));
-
-        // Send email notification
-        const userEmail = (populated?.userId as any)?.email;
-        if (userEmail) {
-          this.emailService.sendTradeRejected(
-            userEmail, brandName, trade.reference, dto.rejectionReason || 'No reason provided',
-          ).catch(err => this.logger.error(`Failed to send trade rejection email: ${err.message}`));
-        }
-      }
 
       return populated || trade;
     } catch (error) {
