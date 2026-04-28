@@ -53,6 +53,9 @@ import {
   CalculatedRateResponse,
 } from './dto';
 import { generateReference, paginate, calculateSkip, toKobo, toNaira } from '../common/utils/helpers';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/schemas/user-notification.schema';
+import { EmailService } from '../email/email.service';
 import { PaginatedResult } from '../common/dto/pagination.dto';
 
 @Injectable()
@@ -71,6 +74,8 @@ export class GiftCardsService implements OnModuleInit {
     @InjectConnection()
     private readonly connection: Connection,
     private readonly walletService: WalletService,
+    private readonly notificationsService: NotificationsService,
+    private readonly emailService: EmailService,
   ) {}
 
   /**
@@ -287,11 +292,31 @@ export class GiftCardsService implements OnModuleInit {
 
   /**
    * Get active categories for a brand (public API)
+   *
+   * IMPORTANT: brandId MUST be cast to ObjectId explicitly. Although Mongoose
+   * usually auto-casts string query params based on the schema type, in this
+   * DB a mix of legacy categories (brandId stored as string — created via
+   * admin UI before the schema was fully enforced) and seeded categories
+   * (brandId stored as ObjectId) exist side-by-side. Without an explicit
+   * cast, the string comparison silently matches ONLY the string-brandId
+   * docs and drops the ObjectId-brandId ones — which is exactly why the
+   * mobile app was seeing "no categories" while the admin (which uses the
+   * sibling `getCategories()` method that already casts explicitly at
+   * line ~269) was showing the real data.
    */
   async getActiveCategories(brandId: string): Promise<GiftCardCategory[]> {
+    if (!Types.ObjectId.isValid(brandId)) {
+      return [];
+    }
+    // Match BOTH forms: legacy string-brandId docs AND properly-cast ObjectId docs.
+    // The DB has a mix until fix-string-brandids.js is run on production.
+    const oid = new Types.ObjectId(brandId);
     return this.categoryModel
       .find({
-        brandId: brandId,
+        $or: [
+          { brandId: oid },
+          { brandId: brandId },
+        ],
         status: CategoryStatus.ACTIVE,
       })
       .sort({ sortOrder: 1, name: 1 });
@@ -765,6 +790,44 @@ export class GiftCardsService implements OnModuleInit {
         .populate('brandId', 'name slug logoUrl')
         .populate('categoryId', 'name slug cardType')
         .populate('reviewedBy', 'email fullName');
+
+      // Send push notification to user (best-effort, outside transaction)
+      const userId = trade.userId.toString();
+      const brandName = (populated?.brandId as any)?.name || 'Gift Card';
+      if (dto.status === TradeStatus.APPROVED) {
+        const creditedNaira = toNaira(dto.adjustedAmountNgn ?? trade.amountNgn);
+        this.notificationsService.sendToUser(
+          userId,
+          'Trade Approved!',
+          `Your ${brandName} trade has been approved. ₦${creditedNaira.toLocaleString()} has been credited to your wallet.`,
+          { type: 'trade_review', tradeId: trade._id.toString() },
+          NotificationType.TRADE,
+        ).catch(err => this.logger.error(`Failed to send trade approval notification: ${err.message}`));
+
+        // Send email notification
+        const userEmail = (populated?.userId as any)?.email;
+        if (userEmail) {
+          this.emailService.sendTradeApproved(
+            userEmail, brandName, trade.cardValueUsd, toNaira(dto.adjustedAmountNgn ?? trade.amountNgn), trade.reference,
+          ).catch(err => this.logger.error(`Failed to send trade approval email: ${err.message}`));
+        }
+      } else if (dto.status === TradeStatus.REJECTED) {
+        this.notificationsService.sendToUser(
+          userId,
+          'Trade Rejected',
+          `Your ${brandName} trade was rejected. Reason: ${dto.rejectionReason || 'No reason provided'}`,
+          { type: 'trade_review', tradeId: trade._id.toString() },
+          NotificationType.TRADE,
+        ).catch(err => this.logger.error(`Failed to send trade rejection notification: ${err.message}`));
+
+        // Send email notification
+        const userEmail = (populated?.userId as any)?.email;
+        if (userEmail) {
+          this.emailService.sendTradeRejected(
+            userEmail, brandName, trade.reference, dto.rejectionReason || 'No reason provided',
+          ).catch(err => this.logger.error(`Failed to send trade rejection email: ${err.message}`));
+        }
+      }
 
       return populated || trade;
     } catch (error) {
