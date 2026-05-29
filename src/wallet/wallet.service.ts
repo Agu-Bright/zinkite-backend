@@ -752,24 +752,28 @@ export class WalletService {
    * 5. Save and return
    */
   async getOrCreateVirtualAccount(userId: string): Promise<VirtualAccountDocument> {
-    // Check existing
+    const provider = this.getPaymentProvider();
+
+    // Check existing. Treat a missing `provider` field (legacy records) as 'paystack'.
     const existing = await this.virtualAccountModel.findOne({
       userId: new Types.ObjectId(userId),
     });
-    if (existing) return existing;
+    if (existing && (existing.provider || 'paystack') === provider) {
+      return existing;
+    }
 
-    // Fetch user
+    // Fetch user (needed to create or migrate)
     const user = await this.userModel.findById(userId);
     if (!user) throw new NotFoundException('User not found');
     if (!user.email) throw new BadRequestException('User must have an email to create a virtual account');
 
     // Parse name
-    const nameParts = (user.fullName || 'Zinkite User').trim().split(' ');
-    const firstName = nameParts[0] || 'Zinkite';
+    const nameParts = (user.fullName || 'Zinkitex User').trim().split(' ');
+    const firstName = nameParts[0] || 'Zinkitex';
     const lastName = nameParts.slice(1).join(' ') || 'User';
 
-    // ── Kora path ──
-    if (this.getPaymentProvider() === 'korapay') {
+    // ── Kora path (active provider) ──
+    if (provider === 'korapay') {
       const accountReference = `VBA_${userId}`;
       const vba = await this.korapayService.createVirtualAccount({
         accountReference,
@@ -777,6 +781,25 @@ export class WalletService {
         customerEmail: user.email,
         customerName: `${firstName} ${lastName}`.trim(),
       });
+
+      // Legacy Paystack DVA present → migrate the record in place so the user
+      // stops seeing the old account on the Bank tab.
+      if (existing) {
+        existing.provider = 'korapay';
+        existing.korapayAccountReference = vba.accountReference;
+        existing.accountName = vba.accountName;
+        existing.accountNumber = vba.accountNumber;
+        existing.bankName = vba.bankName;
+        existing.bankCode = vba.bankCode;
+        existing.bankSlug = null;
+        existing.paystackCustomerCode = null;
+        existing.paystackDvaId = null;
+        existing.status = VirtualAccountStatus.ACTIVE;
+        existing.meta = vba.rawResponse;
+        const migrated = await existing.save();
+        this.logger.log(`Migrated user ${userId} → Kora VBA: ${vba.accountNumber} (${vba.bankName})`);
+        return migrated;
+      }
 
       const koraVa = new this.virtualAccountModel({
         userId: new Types.ObjectId(userId),
@@ -795,7 +818,11 @@ export class WalletService {
       return savedKora;
     }
 
-    // ── Paystack path ──
+    // ── Paystack path (rollback / legacy) ──
+    // If a record already exists (e.g. a Kora one during rollback), keep it
+    // rather than churning a new Paystack DVA.
+    if (existing) return existing;
+
     // Create or fetch Paystack customer
     const customer = await this.paystackService.createCustomer({
       email: user.email,
