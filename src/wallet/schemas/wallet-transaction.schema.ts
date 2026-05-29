@@ -24,15 +24,20 @@ export enum TransactionCategory {
   MANUAL = "MANUAL",
   REFUND = "REFUND",
   GIFTCARD_BUY = "GIFTCARD_BUY",
+  TASK_REWARD = "TASK_REWARD",
 }
 
 export enum TransactionSource {
   GIFTCARD_TRADE = "GIFTCARD_TRADE",
   PAYSTACK_TOPUP = "PAYSTACK_TOPUP",
+  KORAPAY_TOPUP = "KORAPAY_TOPUP",
+  KORA_VBA_TRANSFER = "KORA_VBA_TRANSFER",
   MANUAL_ADJUSTMENT = "MANUAL_ADJUSTMENT",
   REFUND = "REFUND",
   GIFTCARD_RELOADLY = "GIFTCARD_RELOADLY",
   DVA_TRANSFER = "DVA_TRANSFER",
+  GIFTCARD_SHOP = "GIFTCARD_SHOP",
+  TASK_REWARD = "TASK_REWARD",
 }
 
 export enum TransactionStatus {
@@ -101,3 +106,4 @@ WalletTransactionSchema.index({ userId: 1, createdAt: -1 });
 WalletTransactionSchema.index({ walletId: 1, createdAt: -1 });
 WalletTransactionSchema.index({ status: 1 });
 WalletTransactionSchema.index({ category: 1 });
+WalletTransactionSchema.index({ reference: 1 }, { unique: true, sparse: true });

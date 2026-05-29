@@ -25,6 +25,7 @@ import {
   ApiResponse,
   ApiBearerAuth,
 } from "@nestjs/swagger";
+import { ThrottlerGuard, Throttle } from "@nestjs/throttler";
 import { AuthService } from "./auth.service";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import { CurrentUser, Public } from "../common/decorators";
@@ -52,6 +53,7 @@ import {
 
 @ApiTags("Auth")
 @Controller("auth")
+@UseGuards(ThrottlerGuard)
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
@@ -89,6 +91,7 @@ export class AuthController {
 
   @Public()
   @Post("resend-otp")
+  @Throttle({ short: { limit: 3, ttl: 60000 } }) // 3 resends per minute
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Resend verification OTP" })
   @ApiResponse({ status: 200, description: "OTP sent" })
@@ -103,6 +106,7 @@ export class AuthController {
 
   @Public()
   @Post("login")
+  @Throttle({ short: { limit: 5, ttl: 60000 } }) // 5 login attempts per minute
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Login with email and password" })
   @ApiResponse({
@@ -196,6 +200,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Post("verify-pin")
+  @Throttle({ short: { limit: 5, ttl: 60000 } }) // 5 PIN attempts per minute
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth("JWT-auth")
   @ApiOperation({ summary: "Verify transaction PIN" })
@@ -240,6 +245,7 @@ export class AuthController {
 
   @Public()
   @Post("forgot-password/request")
+  @Throttle({ short: { limit: 3, ttl: 60000 } }) // 3 requests per minute
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Request password reset OTP" })
   @ApiResponse({ status: 200, description: "OTP sent if email exists" })

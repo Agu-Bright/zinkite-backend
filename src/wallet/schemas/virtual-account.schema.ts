@@ -29,8 +29,20 @@ export class VirtualAccount {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true, unique: true })
   userId: Types.ObjectId;
 
-  @Prop({ type: String, required: true })
-  paystackCustomerCode: string;
+  // Which provider issued this account ('paystack' | 'korapay')
+  @Prop({ type: String, default: 'paystack' })
+  provider: string;
+
+  // ── Paystack-specific (legacy / fallback) ──
+  @Prop({ type: String, default: null })
+  paystackCustomerCode: string | null;
+
+  @Prop({ type: Number, default: null })
+  paystackDvaId: number | null;
+
+  // ── Kora-specific ──
+  @Prop({ type: String, default: null })
+  korapayAccountReference: string | null;
 
   @Prop({ type: String, required: true })
   accountName: string;
@@ -54,9 +66,6 @@ export class VirtualAccount {
   })
   status: VirtualAccountStatus;
 
-  @Prop({ type: Number, default: null })
-  paystackDvaId: number | null;
-
   @Prop({ type: Object, default: {} })
   meta: Record<string, any>;
 
@@ -69,3 +78,4 @@ export const VirtualAccountSchema = SchemaFactory.createForClass(VirtualAccount)
 VirtualAccountSchema.index({ userId: 1 }, { unique: true });
 VirtualAccountSchema.index({ accountNumber: 1 }, { unique: true });
 VirtualAccountSchema.index({ paystackCustomerCode: 1 });
+VirtualAccountSchema.index({ korapayAccountReference: 1 });

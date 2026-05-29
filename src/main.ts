@@ -18,9 +18,24 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
-  // Enable CORS for mobile app
+  // Enable CORS for known clients
+  const allowedOrigins = [
+    'https://zinkite.com',
+    'https://www.zinkite.com',
+    'https://admin.zinkite.com',
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'http://localhost:3002',
+  ];
   app.enableCors({
-    origin: true,
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+      // Allow requests with no origin (mobile apps, Postman, server-to-server)
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    },
     credentials: true,
   });
 
@@ -102,11 +117,14 @@ async function bootstrap() {
     customSiteTitle: 'Zinkite API Docs',
   });
 
+  // Enable graceful shutdown hooks
+  app.enableShutdownHooks();
+
   const port = process.env.PORT || 3001;
   await app.listen(port);
 
-  logger.log(`🚀 Application running on: http://localhost:${port}`);
-  logger.log(`📚 Swagger docs available at: http://localhost:${port}/docs`);
+  logger.log(`Application running on: http://localhost:${port}`);
+  logger.log(`Swagger docs available at: http://localhost:${port}/docs`);
 }
 
 bootstrap();

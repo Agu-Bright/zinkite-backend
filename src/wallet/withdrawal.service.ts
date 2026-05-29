@@ -62,7 +62,11 @@ import {
   AdminWithdrawalsQueryDto,
 } from './dto/withdrawal.dto';
 import { generateReference } from '../common/utils/helpers';
+import { KorapayService } from '../korapay/korapay.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { EmailService } from '../email/email.service';
+import { User, UserDocument } from '../users/schemas/user.schema';
+import { UserTaskService } from '../user-tasks/user-task.service';
 
 @Injectable()
 export class WithdrawalService {
@@ -72,11 +76,15 @@ export class WithdrawalService {
   constructor(
     @InjectModel(BankAccount.name) private bankAccountModel: Model<BankAccountDocument>,
     @InjectModel(Withdrawal.name) private withdrawalModel: Model<WithdrawalDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
     @InjectModel(Wallet.name) private walletModel: Model<WalletDocument>,
     @InjectModel(WalletTransaction.name) private walletTxnModel: Model<WalletTransactionDocument>,
     @InjectConnection() private connection: Connection,
     private configService: ConfigService,
+    private readonly korapayService: KorapayService,
     private readonly notificationsService: NotificationsService,
+    private readonly emailService: EmailService,
+    private readonly userTaskService: UserTaskService,
   ) {
     // Paystack axios instance with auth header baked in
     this.paystack = axios.create({
@@ -88,6 +96,15 @@ export class WithdrawalService {
     });
   }
 
+  /**
+   * Active payment provider. Defaults to 'paystack' (safe) when unset —
+   * set PAYMENT_PROVIDER=korapay to activate Kora.
+   */
+  private getPaymentProvider(): 'korapay' | 'paystack' {
+    const p = (this.configService.get<string>('PAYMENT_PROVIDER') || 'paystack').toLowerCase();
+    return p === 'korapay' ? 'korapay' : 'paystack';
+  }
+
   // ═══════════════════════════════════════════════════
   //  BANK ACCOUNT MANAGEMENT
   // ═══════════════════════════════════════════════════
@@ -96,6 +113,11 @@ export class WithdrawalService {
    * Fetch the list of Nigerian banks from Paystack (cached on client side).
    */
   async getBanksList(): Promise<Array<{ name: string; code: string }>> {
+    // Kora and Paystack use different bank-code schemes, so the list MUST come
+    // from the same provider that will resolve + disburse.
+    if (this.getPaymentProvider() === 'korapay') {
+      return this.korapayService.listBanks();
+    }
     try {
       const { data } = await this.paystack.get('/bank?country=nigeria&perPage=100');
       return (data.data || []).map((b: any) => ({ name: b.name, code: b.code }));
@@ -110,6 +132,27 @@ export class WithdrawalService {
    * Returns the verified account name.
    */
   async verifyBankAccount(dto: VerifyBankAccountDto) {
+    // ── Kora path ──
+    if (this.getPaymentProvider() === 'korapay') {
+      try {
+        const resolved = await this.korapayService.resolveBankAccount({
+          bankCode: dto.bankCode,
+          accountNumber: dto.accountNumber,
+        });
+        return {
+          verified: true,
+          accountName: resolved.accountName,
+          accountNumber: dto.accountNumber,
+          bankCode: dto.bankCode,
+        };
+      } catch (err: any) {
+        const msg = err.response?.data?.message || 'Could not verify account. Check the details.';
+        this.logger.warn(`Kora resolve account failed: ${msg}`);
+        throw new BadRequestException(msg);
+      }
+    }
+
+    // ── Paystack path ──
     try {
       const { data } = await this.paystack.get(
         `/bank/resolve?account_number=${dto.accountNumber}&bank_code=${dto.bankCode}`,
@@ -139,22 +182,25 @@ export class WithdrawalService {
   async saveBankAccount(userId: string, dto: SaveBankAccountDto) {
     this.logger.log(`Saving bank account for user ${userId}: ${dto.bankName} ${dto.accountNumber}`);
 
-    // 1 — Create Paystack Transfer Recipient
-    let recipientCode: string;
-    try {
-      const { data } = await this.paystack.post('/transferrecipient', {
-        type: 'nuban',
-        name: dto.accountName,
-        account_number: dto.accountNumber,
-        bank_code: dto.bankCode,
-        currency: 'NGN',
-      });
-      recipientCode = data.data.recipient_code;
-      this.logger.log(`Paystack recipient created: ${recipientCode}`);
-    } catch (err: any) {
-      const msg = err.response?.data?.message || 'Could not create transfer recipient';
-      this.logger.error(`Create recipient failed: ${msg}`);
-      throw new BadRequestException(msg);
+    // 1 — Paystack needs a Transfer Recipient created up front.
+    //     Kora disburses directly to bank code + account number, so no recipient.
+    let recipientCode: string | undefined;
+    if (this.getPaymentProvider() === 'paystack') {
+      try {
+        const { data } = await this.paystack.post('/transferrecipient', {
+          type: 'nuban',
+          name: dto.accountName,
+          account_number: dto.accountNumber,
+          bank_code: dto.bankCode,
+          currency: 'NGN',
+        });
+        recipientCode = data.data.recipient_code;
+        this.logger.log(`Paystack recipient created: ${recipientCode}`);
+      } catch (err: any) {
+        const msg = err.response?.data?.message || 'Could not create transfer recipient';
+        this.logger.error(`Create recipient failed: ${msg}`);
+        throw new BadRequestException(msg);
+      }
     }
 
     // 2 — Upsert bank account
@@ -166,11 +212,19 @@ export class WithdrawalService {
         bankCode: dto.bankCode,
         accountNumber: dto.accountNumber,
         accountName: dto.accountName,
-        paystackRecipientCode: recipientCode,
+        ...(recipientCode && { paystackRecipientCode: recipientCode }),
         isVerified: true,
       },
       { upsert: true, new: true },
     );
+
+    // Auto-complete the SETUP_WITHDRAWAL task
+    try {
+      await this.userTaskService.completeTask(userId, 'SETUP_WITHDRAWAL');
+    } catch (e) {
+      // Task may already be completed or not exist — don't block the flow
+      this.logger.debug(`Task completion skipped for SETUP_WITHDRAWAL: ${e.message}`);
+    }
 
     return bankAccount.toJSON();
   }
@@ -215,11 +269,21 @@ export class WithdrawalService {
   async initiateWithdrawal(userId: string, dto: InitiateWithdrawalDto) {
     this.logger.log(`Withdrawal request: user=${userId} amount=₦${dto.amount}`);
 
+    const provider = this.getPaymentProvider();
+
     // ── Pre-checks ──
     const bankAccount = await this.bankAccountModel.findOne({
       userId: new Types.ObjectId(userId),
     });
-    if (!bankAccount || !bankAccount.paystackRecipientCode) {
+    if (!bankAccount) {
+      throw new BadRequestException('Please add and verify your bank account first');
+    }
+    // Paystack needs a saved transfer-recipient code; Kora disburses directly to
+    // the stored bank code + account number, so no recipient code is required.
+    if (provider === 'paystack' && !bankAccount.paystackRecipientCode) {
+      throw new BadRequestException('Please add and verify your bank account first');
+    }
+    if (provider === 'korapay' && (!bankAccount.bankCode || !bankAccount.accountNumber)) {
       throw new BadRequestException('Please add and verify your bank account first');
     }
 
@@ -287,7 +351,9 @@ export class WithdrawalService {
             bankCode: bankAccount.bankCode,
             accountNumber: bankAccount.accountNumber,
             accountName: bankAccount.accountName,
-            paystackRecipientCode: bankAccount.paystackRecipientCode,
+            ...(bankAccount.paystackRecipientCode && {
+              paystackRecipientCode: bankAccount.paystackRecipientCode,
+            }),
             walletTransactionReference: reference,
           },
         ],
@@ -302,8 +368,35 @@ export class WithdrawalService {
       session.endSession();
     }
 
-    // ── Step 4-5: Initiate Paystack Transfer ──
+    // ── Step 4-5: Initiate the payout via the active provider ──
     try {
+      if (provider === 'korapay') {
+        const result = await this.korapayService.disburse({
+          reference,
+          amount: dto.amount, // Kora uses major NGN units
+          bankCode: bankAccount.bankCode,
+          accountNumber: bankAccount.accountNumber,
+          accountName: bankAccount.accountName,
+          customerEmail: '',
+          customerName: bankAccount.accountName,
+          narration: `Zinkitex withdrawal ${reference}`,
+        });
+
+        this.logger.log(`Kora disburse: ref=${reference} status=${result.status}`);
+
+        if (result.status === 'success') {
+          withdrawal.status = WithdrawalStatus.SUCCESS;
+          withdrawal.completedAt = new Date();
+        } else {
+          // 'processing' / 'pending' → wait for the transfer webhook
+          withdrawal.status = WithdrawalStatus.PROCESSING;
+        }
+
+        await withdrawal.save();
+        return withdrawal.toJSON();
+      }
+
+      // ── Paystack path (fallback / rollback) ──
       const { data: transferRes } = await this.paystack.post('/transfer', {
         source: 'balance',
         reason: `Zinkite withdrawal ${reference}`,
@@ -332,9 +425,9 @@ export class WithdrawalService {
       await withdrawal.save();
       return withdrawal.toJSON();
     } catch (err: any) {
-      // Paystack rejected the transfer — refund wallet
+      // Provider rejected the transfer — refund wallet
       const reason = err.response?.data?.message || err.message || 'Transfer initiation failed';
-      this.logger.error(`Paystack transfer failed for ${reference}: ${reason}`);
+      this.logger.error(`Payout failed for ${reference}: ${reason}`);
 
       withdrawal.status = WithdrawalStatus.FAILED;
       withdrawal.failureReason = reason;
@@ -346,6 +439,72 @@ export class WithdrawalService {
       throw new BadRequestException(
         `Withdrawal failed: ${reason}. Your wallet has been refunded.`,
       );
+    }
+  }
+
+  // ═══════════════════════════════════════════════════
+  //  KORA TRANSFER WEBHOOK HANDLER
+  // ═══════════════════════════════════════════════════
+
+  /**
+   * Handle Kora payout webhook events.
+   * Kora uses our own `reference` to identify the disbursement.
+   *
+   *  - transfer.success → mark SUCCESS
+   *  - transfer.failed  → mark FAILED, auto-refund
+   */
+  async handleKoraTransferWebhook(event: string, webhookData: any) {
+    const reference = webhookData.reference;
+    this.logger.log(`Kora transfer webhook: event=${event} ref=${reference}`);
+
+    const withdrawal = await this.withdrawalModel.findOne({ reference });
+    if (!withdrawal) {
+      this.logger.warn(`Withdrawal not found for Kora webhook: ref=${reference}`);
+      return;
+    }
+
+    // Idempotency: skip if already terminal
+    if (
+      [WithdrawalStatus.SUCCESS, WithdrawalStatus.FAILED, WithdrawalStatus.REVERSED].includes(
+        withdrawal.status,
+      )
+    ) {
+      this.logger.log(`Withdrawal ${withdrawal.reference} already terminal (${withdrawal.status}), skipping`);
+      return;
+    }
+
+    withdrawal.rawWebhookEvent = webhookData;
+
+    if (event === 'transfer.success') {
+      withdrawal.status = WithdrawalStatus.SUCCESS;
+      withdrawal.completedAt = new Date();
+      await withdrawal.save();
+      this.logger.log(`✅ Withdrawal ${withdrawal.reference} SUCCESS (Kora)`);
+
+      const amountNaira = withdrawal.amount / 100;
+      this.notificationsService.sendToUser(
+        withdrawal.userId.toString(),
+        'Withdrawal Successful',
+        `Your withdrawal of ₦${amountNaira.toLocaleString()} has been sent to your bank account.`,
+        { type: 'withdrawal_update', withdrawalId: withdrawal._id.toString(), status: 'SUCCESS' },
+        'TRANSACTION' as any,
+        'withdrawal_update',
+      ).catch((err) => this.logger.error(`Withdrawal notification error: ${err.message}`));
+    } else if (event === 'transfer.failed') {
+      withdrawal.status = WithdrawalStatus.FAILED;
+      withdrawal.failureReason = webhookData.reason || webhookData.message || 'Transfer failed';
+      await withdrawal.save();
+      this.logger.warn(`❌ Withdrawal ${withdrawal.reference} FAILED (Kora) — refunding`);
+      await this.refundWallet(withdrawal);
+
+      this.notificationsService.sendToUser(
+        withdrawal.userId.toString(),
+        'Withdrawal Failed',
+        `Your withdrawal of ₦${(withdrawal.amount / 100).toLocaleString()} failed and your wallet has been refunded.`,
+        { type: 'withdrawal_update', withdrawalId: withdrawal._id.toString(), status: 'FAILED' },
+        'TRANSACTION' as any,
+        'withdrawal_update',
+      ).catch((err) => this.logger.error(`Withdrawal notification error: ${err.message}`));
     }
   }
 
@@ -407,6 +566,15 @@ export class WithdrawalService {
           'TRANSACTION' as any,
           'withdrawal_update',
         ).catch((err) => this.logger.error(`Withdrawal notification error: ${err.message}`));
+
+        // Send email
+        this.userModel.findById(withdrawal.userId).select('email').lean().then(user => {
+          if (user?.email) {
+            this.emailService.sendWithdrawalCompleted(
+              user.email, amountNaira, withdrawal.bankName, withdrawal.accountNumber, withdrawal.reference,
+            ).catch(err => this.logger.error(`Withdrawal email error: ${err.message}`));
+          }
+        });
         break;
       }
 
@@ -427,6 +595,15 @@ export class WithdrawalService {
           'TRANSACTION' as any,
           'withdrawal_update',
         ).catch((err) => this.logger.error(`Withdrawal notification error: ${err.message}`));
+
+        // Send email
+        this.userModel.findById(withdrawal.userId).select('email').lean().then(user => {
+          if (user?.email) {
+            this.emailService.sendWithdrawalFailed(
+              user.email, failedAmount, withdrawal.reference, withdrawal.failureReason || 'Transfer failed',
+            ).catch(err => this.logger.error(`Withdrawal email error: ${err.message}`));
+          }
+        });
         break;
       }
 
@@ -506,7 +683,26 @@ export class WithdrawalService {
     } catch (err) {
       await session.abortTransaction();
       this.logger.error(`CRITICAL: Refund failed for ${withdrawal.reference}: ${(err as Error).message}`);
-      // TODO: alert ops team — this needs manual intervention
+
+      // Alert ops team via email
+      const adminEmail = this.configService.get<string>('ADMIN_EMAIL') || 'admin@zinkite.com';
+      this.emailService.send({
+        to: adminEmail,
+        subject: `CRITICAL: Withdrawal refund failed — ${withdrawal.reference}`,
+        html: `
+          <h2>Manual Intervention Required</h2>
+          <p>A withdrawal refund failed and requires manual intervention.</p>
+          <ul>
+            <li><strong>Reference:</strong> ${withdrawal.reference}</li>
+            <li><strong>User ID:</strong> ${withdrawal.userId}</li>
+            <li><strong>Amount:</strong> ₦${(withdrawal.amount / 100).toLocaleString()}</li>
+            <li><strong>Error:</strong> ${(err as Error).message}</li>
+            <li><strong>Time:</strong> ${new Date().toISOString()}</li>
+          </ul>
+          <p>Please investigate and manually credit the user's wallet if appropriate.</p>
+        `,
+      }).catch(emailErr => this.logger.error(`Failed to send refund alert email: ${emailErr.message}`));
+
       throw err;
     } finally {
       session.endSession();

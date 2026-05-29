@@ -9,6 +9,7 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { ConfigService } from '@nestjs/config';
@@ -77,9 +78,7 @@ export class OtpService {
     this.logger.log(`OTP generated for ${normalizedEmail} (${purpose})`);
 
     // ============================================
-    // 🔐 LOG OTP TO CONSOLE FOR TESTING
-    // Always log in development, or when email fails
-    // ============================================
+    // 🔐 LOG OTP TO CONSOLE (always, for monitoring)
     this.logOtpToConsole(normalizedEmail, code, purpose, expiresAt);
 
     return code;
@@ -235,6 +234,7 @@ export class OtpService {
   /**
    * Clean up expired OTPs (called by cron or manually)
    */
+  @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async cleanupExpired(): Promise<number> {
     const result = await this.otpModel.deleteMany({
       expiresAt: { $lt: new Date() },

@@ -41,21 +41,6 @@ const SYSTEM_ROLES = [
     ],
   },
   {
-    name: 'VTU Operations Admin',
-    slug: 'vtu-operations-admin',
-    description: 'VTU and electricity operations',
-    permissions: [
-      'dashboard.view',
-      'users.view',
-      'vtu.view', 'vtu.refund', 'vtu.retry',
-      'electricity.view', 'electricity.refund', 'electricity.retry',
-      'transactions.view', 'transactions.refund', 'transactions.retry',
-      'reports.view',
-      'provider-health.view',
-      'complaints.view', 'complaints.manage',
-    ],
-  },
-  {
     name: 'Gift Card Admin',
     slug: 'gift-card-admin',
     description: 'Gift card trading management',
@@ -66,20 +51,6 @@ const SYSTEM_ROLES = [
       'giftcards.brands.view', 'giftcards.brands.manage',
       'giftcards.rates.view', 'giftcards.rates.manage',
       'giftcard-buy.view', 'giftcard-buy.manage', 'giftcard-buy.sync', 'giftcard-buy.refund', 'giftcard-buy.stats',
-      'reports.view',
-      'complaints.view', 'complaints.manage',
-    ],
-  },
-  {
-    name: 'Crypto Admin',
-    slug: 'crypto-admin',
-    description: 'Cryptocurrency trading management',
-    permissions: [
-      'dashboard.view',
-      'users.view',
-      'crypto.trades.view', 'crypto.trades.manage',
-      'crypto.rates.view', 'crypto.rates.manage',
-      'crypto.supported.view', 'crypto.supported.manage',
       'reports.view',
       'complaints.view', 'complaints.manage',
     ],
@@ -192,7 +163,15 @@ export class AdminSeedService implements OnModuleInit {
       email: email.toLowerCase().trim(),
     });
     if (existing) {
-      this.logger.log(`Super Admin already exists: ${email}`);
+      // Ensure existing admin has super-admin role
+      const superRole = await this.adminRoleModel.findOne({ slug: 'super-admin' });
+      if (superRole && String(existing.roleId) !== String(superRole._id)) {
+        existing.roleId = superRole._id;
+        await existing.save();
+        this.logger.log(`Updated ${email} to Super Admin role`);
+      } else {
+        this.logger.log(`Super Admin already exists: ${email}`);
+      }
       return;
     }
 

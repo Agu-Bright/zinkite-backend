@@ -10,12 +10,18 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
   imports: [
     JwtModule.registerAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_ACCESS_SECRET') || 'default-secret-change-me',
-        signOptions: {
-          expiresIn: 900, // 15 minutes in seconds
-        },
-      }),
+      useFactory: (configService: ConfigService) => {
+        const secret = configService.get<string>('JWT_ACCESS_SECRET');
+        if (!secret || secret.includes('your-super-secret')) {
+          throw new Error('JWT_ACCESS_SECRET must be set to a secure random value in .env');
+        }
+        return {
+          secret,
+          signOptions: {
+            expiresIn: 900, // 15 minutes in seconds
+          },
+        };
+      },
       inject: [ConfigService],
     }),
   ],

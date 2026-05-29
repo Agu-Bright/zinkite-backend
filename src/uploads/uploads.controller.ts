@@ -183,4 +183,36 @@ export class UploadsController {
 
     return this.uploadsService.uploadPromoBanner(file);
   }
+
+  /**
+   * Upload gift card shop product image
+   */
+  @Post('giftcard-shop-image')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Upload gift card shop product image' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Product image (jpeg, png, gif, webp)',
+        },
+      },
+      required: ['file'],
+    },
+  })
+  @ApiResponse({ status: 201, description: 'Product image uploaded successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid file' })
+  async uploadShopProductImage(
+    @UploadedFile() file: Express.Multer.File,
+  ): Promise<UploadResult> {
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    return this.uploadsService.uploadShopProductImage(file);
+  }
 }

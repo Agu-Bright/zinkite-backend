@@ -254,8 +254,6 @@ export class AuthService {
       OtpPurpose.EMAIL_VERIFICATION,
       user._id,
     );
-    console.log("otp", otp);
-
     await this.emailService.sendVerificationOtp(email, otp);
 
     return { message: "Verification code sent" };
@@ -275,6 +273,16 @@ export class AuthService {
       throw new UnauthorizedException("Invalid email or password");
     }
 
+    // Check account lockout
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      const minutesLeft = Math.ceil(
+        (user.lockedUntil.getTime() - Date.now()) / 60000,
+      );
+      throw new UnauthorizedException(
+        `Account is temporarily locked. Try again in ${minutesLeft} minute(s).`,
+      );
+    }
+
     // Check if user has password (social auth users may not)
     if (!user.passwordHash) {
       throw new UnauthorizedException(
@@ -288,7 +296,38 @@ export class AuthService {
       dto.password,
     );
     if (!isPasswordValid) {
+      // Increment failed attempts and lock if threshold reached
+      const attempts = (user.failedLoginAttempts || 0) + 1;
+      const MAX_ATTEMPTS = 5;
+      const LOCKOUT_MINUTES = 15;
+
+      const updateData: any = { failedLoginAttempts: attempts };
+      if (attempts >= MAX_ATTEMPTS) {
+        updateData.lockedUntil = new Date(
+          Date.now() + LOCKOUT_MINUTES * 60 * 1000,
+        );
+        this.logger.warn(
+          `Account locked for ${dto.email} after ${attempts} failed attempts`,
+        );
+      }
+
+      await this.usersService.update(user._id, updateData);
+
+      if (attempts >= MAX_ATTEMPTS) {
+        throw new UnauthorizedException(
+          `Too many failed login attempts. Account locked for ${LOCKOUT_MINUTES} minutes.`,
+        );
+      }
+
       throw new UnauthorizedException("Invalid email or password");
+    }
+
+    // Reset failed attempts on successful login
+    if (user.failedLoginAttempts > 0) {
+      await this.usersService.update(user._id, {
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+      });
     }
 
     // Check email verification

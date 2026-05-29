@@ -320,6 +320,221 @@ export class EmailService {
   }
 
   /**
+   * Send trade approved email
+   */
+  async sendTradeApproved(
+    email: string,
+    brandName: string,
+    cardValueUsd: number,
+    amountNgn: number,
+    reference: string,
+  ): Promise<boolean> {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: #059669; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+          .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
+          .amount { font-size: 32px; font-weight: bold; color: #059669; text-align: center; margin: 20px 0; }
+          .details { background: white; padding: 20px; border-radius: 8px; }
+          .details p { margin: 8px 0; }
+          .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Trade Approved!</h1>
+          </div>
+          <div class="content">
+            <p>Great news! Your gift card trade has been approved.</p>
+            <div class="amount">+\u20A6${amountNgn.toLocaleString()}</div>
+            <div class="details">
+              <p><strong>Brand:</strong> ${brandName}</p>
+              <p><strong>Card Value:</strong> $${cardValueUsd}</p>
+              <p><strong>Credited:</strong> \u20A6${amountNgn.toLocaleString()}</p>
+              <p><strong>Reference:</strong> ${reference}</p>
+            </div>
+            <p style="margin-top: 20px;">The amount has been credited to your wallet.</p>
+          </div>
+          <div class="footer">
+            <p>&copy; ${new Date().getFullYear()} Zinkite. All rights reserved.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    return this.send({
+      to: email,
+      subject: `Trade Approved: \u20A6${amountNgn.toLocaleString()} credited`,
+      html,
+      text: `Your ${brandName} gift card trade has been approved. \u20A6${amountNgn.toLocaleString()} has been credited to your wallet. Reference: ${reference}`,
+    });
+  }
+
+  /**
+   * Send trade rejected email
+   */
+  async sendTradeRejected(
+    email: string,
+    brandName: string,
+    reference: string,
+    reason: string,
+  ): Promise<boolean> {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: #DC2626; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+          .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
+          .reason { background: #FEF2F2; border: 1px solid #FECACA; padding: 15px; border-radius: 8px; margin: 20px 0; }
+          .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Trade Rejected</h1>
+          </div>
+          <div class="content">
+            <p>Unfortunately, your gift card trade has been rejected.</p>
+            <p><strong>Brand:</strong> ${brandName}</p>
+            <p><strong>Reference:</strong> ${reference}</p>
+            <div class="reason">
+              <strong>Reason:</strong> ${reason}
+            </div>
+            <p>If you believe this is an error, please contact our support team.</p>
+          </div>
+          <div class="footer">
+            <p>&copy; ${new Date().getFullYear()} Zinkite. All rights reserved.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    return this.send({
+      to: email,
+      subject: `Trade Rejected: ${brandName} - ${reference}`,
+      html,
+      text: `Your ${brandName} gift card trade (${reference}) has been rejected. Reason: ${reason}. Contact support if you believe this is an error.`,
+    });
+  }
+
+  /**
+   * Send withdrawal completed email
+   */
+  async sendWithdrawalCompleted(
+    email: string,
+    amountNgn: number,
+    bankName: string,
+    accountNumber: string,
+    reference: string,
+  ): Promise<boolean> {
+    const masked = accountNumber.slice(-4).padStart(accountNumber.length, '*');
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: #059669; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+          .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
+          .amount { font-size: 32px; font-weight: bold; color: #059669; text-align: center; margin: 20px 0; }
+          .details { background: white; padding: 20px; border-radius: 8px; }
+          .details p { margin: 8px 0; }
+          .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Withdrawal Successful</h1>
+          </div>
+          <div class="content">
+            <p>Your withdrawal has been processed successfully.</p>
+            <div class="amount">\u20A6${amountNgn.toLocaleString()}</div>
+            <div class="details">
+              <p><strong>Bank:</strong> ${bankName}</p>
+              <p><strong>Account:</strong> ${masked}</p>
+              <p><strong>Reference:</strong> ${reference}</p>
+            </div>
+          </div>
+          <div class="footer">
+            <p>&copy; ${new Date().getFullYear()} Zinkite. All rights reserved.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    return this.send({
+      to: email,
+      subject: `Withdrawal Completed: \u20A6${amountNgn.toLocaleString()}`,
+      html,
+    });
+  }
+
+  /**
+   * Send withdrawal failed email
+   */
+  async sendWithdrawalFailed(
+    email: string,
+    amountNgn: number,
+    reference: string,
+    reason: string,
+  ): Promise<boolean> {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: #DC2626; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+          .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
+          .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Withdrawal Failed</h1>
+          </div>
+          <div class="content">
+            <p>Your withdrawal of <strong>\u20A6${amountNgn.toLocaleString()}</strong> could not be processed.</p>
+            <p><strong>Reference:</strong> ${reference}</p>
+            <p><strong>Reason:</strong> ${reason}</p>
+            <p>The amount has been refunded to your wallet. Please try again or contact support.</p>
+          </div>
+          <div class="footer">
+            <p>&copy; ${new Date().getFullYear()} Zinkite. All rights reserved.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    return this.send({
+      to: email,
+      subject: `Withdrawal Failed: \u20A6${amountNgn.toLocaleString()}`,
+      html,
+    });
+  }
+
+  /**
    * Send transaction notification email
    */
   async sendTransactionNotification(

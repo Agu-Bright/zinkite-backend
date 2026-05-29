@@ -27,6 +27,10 @@ import {
   PaystackTransaction,
   PaystackTransactionDocument,
 } from "../paystack/schemas/paystack-transaction.schema";
+import {
+  KorapayTransaction,
+  KorapayTransactionDocument,
+} from "../korapay/schemas/korapay-transaction.schema";
 import { Withdrawal, WithdrawalDocument } from "../wallet/schemas/withdrawal.schema";
 import {
   WalletCreditRequest,
@@ -78,6 +82,8 @@ export class AdminService {
     private readonly tradeModel: Model<GiftCardTradeDocument>,
     @InjectModel(PaystackTransaction.name)
     private readonly paystackModel: Model<PaystackTransactionDocument>,
+    @InjectModel(KorapayTransaction.name)
+    private readonly korapayModel: Model<KorapayTransactionDocument>,
     @InjectModel(Withdrawal.name)
     private readonly withdrawalModel: Model<WithdrawalDocument>,
     @InjectModel(WalletCreditRequest.name)
@@ -625,6 +631,70 @@ export class AdminService {
 
     if (!transaction) {
       throw new NotFoundException("Paystack transaction not found");
+    }
+
+    return {
+      ...transaction.toObject(),
+      amountNaira: toNaira(transaction.amount),
+    };
+  }
+
+  // ============================================
+  // KORA PAY MANAGEMENT
+  // ============================================
+
+  /**
+   * Get Kora Pay transactions (collections + payouts).
+   * Reuses PaystackQueryDto — same filter shape (userId, status, search, dates).
+   */
+  async getKorapayTransactions(
+    query: PaystackQueryDto,
+  ): Promise<PaginatedResult<KorapayTransaction>> {
+    const filter: any = {};
+
+    if (query.userId) {
+      filter.userId = new Types.ObjectId(query.userId);
+    }
+    if (query.status) {
+      filter.status = query.status;
+    }
+    if (query.search) {
+      filter.reference = { $regex: query.search, $options: "i" };
+    }
+    if (query.startDate || query.endDate) {
+      filter.createdAt = {};
+      if (query.startDate) filter.createdAt.$gte = new Date(query.startDate);
+      if (query.endDate) filter.createdAt.$lte = new Date(query.endDate);
+    }
+
+    const total = await this.korapayModel.countDocuments(filter);
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const transactions = await this.korapayModel
+      .find(filter)
+      .populate("userId", "email phone fullName")
+      .sort({ createdAt: -1 })
+      .skip(calculateSkip(page, limit))
+      .limit(limit);
+
+    const mappedTransactions = transactions.map((t) => ({
+      ...t.toObject(),
+      amountNaira: toNaira(t.amount),
+    }));
+
+    return paginate(mappedTransactions, total, page, limit);
+  }
+
+  /**
+   * Get single Kora Pay transaction
+   */
+  async getKorapayTransaction(id: string): Promise<any> {
+    const transaction = await this.korapayModel
+      .findById(id)
+      .populate("userId", "email phone fullName");
+
+    if (!transaction) {
+      throw new NotFoundException("Kora transaction not found");
     }
 
     return {

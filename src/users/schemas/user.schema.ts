@@ -109,6 +109,15 @@ export class User {
   isDeleted: boolean;
 
   /**
+   * Login attempt tracking for account lockout
+   */
+  @Prop({ type: Number, default: 0 })
+  failedLoginAttempts: number;
+
+  @Prop({ type: Date, default: null })
+  lockedUntil: Date | null;
+
+  /**
    * Account status
    */
   @Prop({
@@ -141,6 +150,24 @@ UserSchema.virtual('wallet', {
   localField: '_id',
   foreignField: 'userId',
   justOne: true,
+});
+
+// Auto-filter soft-deleted users on queries
+// Admin queries that need deleted users should use { isDeleted: true } explicitly
+UserSchema.pre('find', function () {
+  if (this.getFilter().isDeleted === undefined) {
+    this.where({ isDeleted: { $ne: true } });
+  }
+});
+UserSchema.pre('findOne', function () {
+  if (this.getFilter().isDeleted === undefined) {
+    this.where({ isDeleted: { $ne: true } });
+  }
+});
+UserSchema.pre('countDocuments', function () {
+  if (this.getFilter().isDeleted === undefined) {
+    this.where({ isDeleted: { $ne: true } });
+  }
 });
 
 // Exclude sensitive fields from JSON

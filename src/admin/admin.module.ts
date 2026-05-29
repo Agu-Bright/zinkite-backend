@@ -31,6 +31,10 @@ import {
   PaystackTransaction,
   PaystackTransactionSchema,
 } from '../paystack/schemas/paystack-transaction.schema';
+import {
+  KorapayTransaction,
+  KorapayTransactionSchema,
+} from '../korapay/schemas/korapay-transaction.schema';
 import { Withdrawal, WithdrawalSchema } from '../wallet/schemas/withdrawal.schema';
 
 // RBAC controllers & services
@@ -43,6 +47,7 @@ import { AdminRolesService } from './admin-roles.service';
 import { AdminAuditController } from './admin-audit.controller';
 import { ProviderHealthService, ProviderHealthCheck, ProviderHealthCheckSchema } from './provider-health.service';
 import { AdminSeedService } from './seeds/seed-roles';
+import { GiftCardSeedService } from './seeds/seed-giftcards';
 import { NotificationLog, NotificationLogSchema } from './schemas/notification-log.schema';
 
 // Feature modules
@@ -52,6 +57,12 @@ import { UsersModule } from '../users/users.module';
 import { SettingsModule } from '../settings/settings.module';
 import { AuditModule } from '../audit/audit.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { GiftCardShopModule } from '../giftcard-shop/giftcard-shop.module';
+import { GiftCardBrand, GiftCardBrandSchema } from '../giftcards/schemas/gift-card-brand.schema';
+import { GiftCardCategory, GiftCardCategorySchema } from '../giftcards/schemas/gift-card-category.schema';
+import { GiftCardRate, GiftCardRateSchema } from '../giftcards/schemas/gift-card-rate.schema';
+import { GiftCardShopProduct, GiftCardShopProductSchema } from '../giftcard-shop/schemas/giftcard-shop-product.schema';
+import { GiftCardShopCode, GiftCardShopCodeSchema } from '../giftcard-shop/schemas/giftcard-shop-code.schema';
 
 @Module({
   imports: [
@@ -61,12 +72,18 @@ import { NotificationsModule } from '../notifications/notifications.module';
       { name: WalletTransaction.name, schema: WalletTransactionSchema },
       { name: GiftCardTrade.name, schema: GiftCardTradeSchema },
       { name: PaystackTransaction.name, schema: PaystackTransactionSchema },
+      { name: KorapayTransaction.name, schema: KorapayTransactionSchema },
       { name: Withdrawal.name, schema: WithdrawalSchema },
       { name: AdminRole.name, schema: AdminRoleSchema },
       { name: AdminUser.name, schema: AdminUserSchema },
       { name: WalletCreditRequest.name, schema: WalletCreditRequestSchema },
       { name: ProviderHealthCheck.name, schema: ProviderHealthCheckSchema },
       { name: NotificationLog.name, schema: NotificationLogSchema },
+      { name: GiftCardBrand.name, schema: GiftCardBrandSchema },
+      { name: GiftCardCategory.name, schema: GiftCardCategorySchema },
+      { name: GiftCardRate.name, schema: GiftCardRateSchema },
+      { name: GiftCardShopProduct.name, schema: GiftCardShopProductSchema },
+      { name: GiftCardShopCode.name, schema: GiftCardShopCodeSchema },
     ]),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -82,6 +99,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     SettingsModule,
     AuditModule,
     NotificationsModule,
+    GiftCardShopModule,
   ],
   controllers: [
     // More-specific prefix controllers MUST come before AdminController
@@ -99,6 +117,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     AdminRolesService,
     ProviderHealthService,
     AdminSeedService,
+    GiftCardSeedService,
   ],
   exports: [AdminService, AdminAuthService],
 })

@@ -225,17 +225,26 @@ export class NotificationsService implements OnModuleInit {
     const invalidTokens: string[] = [];
 
     for (const chunk of chunks) {
-      try {
-        const tickets: any[] = await this.expo.sendPushNotificationsAsync(chunk);
-        tickets.forEach((ticket, idx) => {
-          if (ticket.status === 'error') {
-            if (ticket.details?.error === 'DeviceNotRegistered') {
-              invalidTokens.push((chunk[idx] as any).to as string);
+      let retries = 2;
+      while (retries >= 0) {
+        try {
+          const tickets: any[] = await this.expo.sendPushNotificationsAsync(chunk);
+          tickets.forEach((ticket, idx) => {
+            if (ticket.status === 'error') {
+              if (ticket.details?.error === 'DeviceNotRegistered') {
+                invalidTokens.push((chunk[idx] as any).to as string);
+              }
             }
+          });
+          break; // Success — exit retry loop
+        } catch (error) {
+          retries--;
+          if (retries < 0) {
+            this.logger.error(`Failed to send push to user ${userId} after retries: ${error.message}`);
+          } else {
+            await new Promise(r => setTimeout(r, 1000 * (2 - retries))); // Backoff: 1s, 2s
           }
-        });
-      } catch (error) {
-        this.logger.error(`Failed to send push to user ${userId}: ${error.message}`);
+        }
       }
     }
 

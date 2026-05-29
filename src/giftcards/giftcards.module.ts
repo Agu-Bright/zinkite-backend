@@ -23,6 +23,7 @@ import {
 } from './schemas/gift-card-trade.schema';
 import { WalletModule } from '../wallet/wallet.module';
 import { UsersModule } from '../users/users.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -33,7 +34,8 @@ import { UsersModule } from '../users/users.module';
       { name: GiftCardTrade.name, schema: GiftCardTradeSchema },
     ]),
     forwardRef(() => WalletModule),
-    UsersModule, // Import UsersModule for PinGuard
+    UsersModule,
+    NotificationsModule,
   ],
   controllers: [GiftCardsController],
   providers: [GiftCardsService],

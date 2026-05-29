@@ -33,6 +33,9 @@ import {
 } from "./schemas/wallet-transaction.schema";
 import { User, UserDocument } from "../users/schemas/user.schema";
 import { PaystackService } from "../paystack/paystack.service";
+import { KorapayService } from "../korapay/korapay.service";
+import { KorapayTransactionType } from "../korapay/schemas/korapay-transaction.schema";
+import { ConfigService } from "@nestjs/config";
 import { NotificationsService } from "../notifications/notifications.service";
 import { NotificationType } from "../notifications/schemas/user-notification.schema";
 import {
@@ -89,9 +92,21 @@ export class WalletService {
     private readonly userModel: Model<UserDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly paystackService: PaystackService,
+    private readonly korapayService: KorapayService,
+    private readonly configService: ConfigService,
     private readonly notificationsService: NotificationsService,
     private readonly moduleRef: ModuleRef,
   ) {}
+
+  /**
+   * Active payment provider for collections/payouts.
+   * Controlled by PAYMENT_PROVIDER env. Defaults to 'paystack' (safe) when unset —
+   * set PAYMENT_PROVIDER=korapay to activate Kora.
+   */
+  private getPaymentProvider(): "korapay" | "paystack" {
+    const p = (this.configService.get<string>("PAYMENT_PROVIDER") || "paystack").toLowerCase();
+    return p === "korapay" ? "korapay" : "paystack";
+  }
 
   private _referralService: any = undefined;
 
@@ -559,7 +574,39 @@ export class WalletService {
     const reference = generateReference("TOPUP");
     const amountInKobo = toKobo(dto.amount);
 
-    // Initialize Paystack transaction
+    // ── Kora Pay path ──
+    if (this.getPaymentProvider() === "korapay") {
+      const backendUrl =
+        this.configService.get<string>("BACKEND_URL") ||
+        "https://backend.zinkitex.com";
+
+      const koraResult = await this.korapayService.initializeCharge({
+        email,
+        amount: dto.amount, // Kora uses major NGN units, not kobo
+        reference,
+        redirectUrl: dto.callbackUrl,
+        notificationUrl: `${backendUrl}/webhooks/korapay`,
+        metadata: { userId, type: "WALLET_TOPUP" },
+      });
+
+      await this.korapayService.createTransactionRecord({
+        userId,
+        reference,
+        amount: amountInKobo,
+        type: KorapayTransactionType.CHARGE,
+        checkoutUrl: koraResult.checkoutUrl,
+        metadata: { type: "WALLET_TOPUP" },
+      });
+
+      return {
+        // Reuse the existing response field so the mobile client is unchanged.
+        authorizationUrl: koraResult.checkoutUrl,
+        accessCode: "",
+        reference,
+      };
+    }
+
+    // ── Paystack path (fallback / rollback) ──
     const paystackResult = await this.paystackService.initializeTransaction({
       email,
       amount: amountInKobo,
@@ -601,7 +648,35 @@ export class WalletService {
       return { success: true, message: "Payment already processed" };
     }
 
-    // Verify with Paystack
+    // ── Kora path ──
+    if (this.getPaymentProvider() === "korapay") {
+      const verification = await this.korapayService.verifyCharge(reference);
+      if (!verification.success) {
+        return { success: false, message: "Payment verification failed" };
+      }
+      try {
+        await this.creditWallet({
+          userId,
+          amount: toKobo(verification.amount), // Kora returns major NGN units
+          category: TransactionCategory.TOPUP,
+          source: TransactionSource.KORAPAY_TOPUP,
+          narration: `Wallet top-up via Kora Pay`,
+          reference,
+          meta: {
+            korapayReference: reference,
+            channel: verification.channel,
+          },
+        });
+        return { success: true, message: "Wallet topped up successfully" };
+      } catch (error) {
+        if (error.code === 11000) {
+          return { success: true, message: "Payment already processed" };
+        }
+        throw error;
+      }
+    }
+
+    // ── Paystack path ──
     const verification =
       await this.paystackService.verifyTransaction(reference);
 
@@ -693,6 +768,34 @@ export class WalletService {
     const firstName = nameParts[0] || 'Zinkite';
     const lastName = nameParts.slice(1).join(' ') || 'User';
 
+    // ── Kora path ──
+    if (this.getPaymentProvider() === 'korapay') {
+      const accountReference = `VBA_${userId}`;
+      const vba = await this.korapayService.createVirtualAccount({
+        accountReference,
+        accountName: `${firstName} ${lastName}`.trim(),
+        customerEmail: user.email,
+        customerName: `${firstName} ${lastName}`.trim(),
+      });
+
+      const koraVa = new this.virtualAccountModel({
+        userId: new Types.ObjectId(userId),
+        provider: 'korapay',
+        korapayAccountReference: vba.accountReference,
+        accountName: vba.accountName,
+        accountNumber: vba.accountNumber,
+        bankName: vba.bankName,
+        bankCode: vba.bankCode,
+        status: VirtualAccountStatus.ACTIVE,
+        meta: vba.rawResponse,
+      });
+
+      const savedKora = await koraVa.save();
+      this.logger.log(`Kora VBA created for user ${userId}: ${vba.accountNumber} (${vba.bankName})`);
+      return savedKora;
+    }
+
+    // ── Paystack path ──
     // Create or fetch Paystack customer
     const customer = await this.paystackService.createCustomer({
       email: user.email,
@@ -711,6 +814,7 @@ export class WalletService {
     // Save to DB
     const virtualAccount = new this.virtualAccountModel({
       userId: new Types.ObjectId(userId),
+      provider: 'paystack',
       paystackCustomerCode: customer.customerCode,
       accountName: dva.accountName,
       accountNumber: dva.accountNumber,
@@ -846,5 +950,93 @@ export class WalletService {
       NotificationType.TRANSACTION,
       'wallet_topup',
     ).catch((err) => this.logger.error('Failed to send DVA notification:', err.message));
+  }
+
+  /**
+   * Handle an incoming Kora virtual-bank-account deposit (charge.success on a VBA).
+   * Kora amounts are in MAJOR units (NGN); the wallet stores kobo.
+   * The user is resolved from the account reference (we set it to `VBA_<userId>`)
+   * or by matching the virtual account number.
+   */
+  async handleKoraVbaTransfer(webhookData: Record<string, any>): Promise<void> {
+    const reference = webhookData.reference;
+    const amountKobo = toKobo(Number(webhookData.amount) || 0);
+
+    if (!reference || !amountKobo) {
+      this.logger.warn('Kora VBA transfer webhook missing reference or amount');
+      return;
+    }
+
+    // Idempotency
+    const existingTxn = await this.findTransactionByReference(reference);
+    if (existingTxn) {
+      this.logger.log(`Kora VBA transfer already processed: ${reference}`);
+      return;
+    }
+
+    const vbaDetails =
+      webhookData.virtual_bank_account_details || webhookData.virtual_account || {};
+    const accountReference =
+      vbaDetails.account_reference ||
+      webhookData.account_reference ||
+      webhookData.metadata?.account_reference;
+    const accountNumber = vbaDetails.account_number || webhookData.account_number;
+
+    let virtualAccount: VirtualAccountDocument | null = null;
+
+    // Strategy 0: account reference is "VBA_<userId>" — extract the userId directly
+    if (accountReference && accountReference.startsWith('VBA_')) {
+      const uid = accountReference.slice(4);
+      if (Types.ObjectId.isValid(uid)) {
+        virtualAccount = await this.virtualAccountModel.findOne({
+          userId: new Types.ObjectId(uid),
+        });
+      }
+      if (!virtualAccount) {
+        virtualAccount = await this.virtualAccountModel.findOne({
+          korapayAccountReference: accountReference,
+        });
+      }
+    }
+
+    // Strategy 1: by stored account number
+    if (!virtualAccount && accountNumber) {
+      virtualAccount = await this.virtualAccountModel.findOne({ accountNumber });
+    }
+
+    if (!virtualAccount) {
+      this.logger.error(
+        `Kora VBA transfer FAILED: no virtual account found. ref=${reference}, accountRef=${accountReference}, accountNumber=${accountNumber}`,
+      );
+      return;
+    }
+
+    const userId = virtualAccount.userId.toString();
+
+    await this.creditWallet({
+      userId,
+      amount: amountKobo,
+      category: TransactionCategory.TOPUP,
+      source: TransactionSource.KORA_VBA_TRANSFER,
+      narration: 'Wallet top-up via bank transfer',
+      reference,
+      meta: {
+        korapayReference: reference,
+        channel: 'virtual_account',
+        accountNumber: virtualAccount.accountNumber,
+        bankName: virtualAccount.bankName,
+      },
+    });
+
+    this.logger.log(`Kora VBA transfer credited: user=${userId}, amount=₦${toNaira(amountKobo)}, ref=${reference}`);
+
+    this.notificationsService.sendToUser(
+      userId,
+      'Wallet Funded',
+      `Your wallet has been credited with ₦${toNaira(amountKobo).toLocaleString('en-NG')}.`,
+      { type: 'wallet_topup', reference },
+      NotificationType.TRANSACTION,
+      'wallet_topup',
+    ).catch((err) => this.logger.error('Failed to send Kora VBA notification:', err.message));
   }
 }

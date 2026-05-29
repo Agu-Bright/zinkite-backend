@@ -366,6 +366,26 @@ export class AdminController {
   }
 
   // ============================================
+  // KORA PAY MANAGEMENT
+  // ============================================
+
+  @Get("korapay/transactions")
+  @ApiOperation({ summary: "Get Kora Pay transactions" })
+  @ApiResponse({ status: 200, description: "Paginated Kora transactions" })
+  async getKorapayTransactions(@Query() query: PaystackQueryDto) {
+    return this.adminService.getKorapayTransactions(query);
+  }
+
+  @Get("korapay/transactions/:id")
+  @ApiOperation({ summary: "Get single Kora Pay transaction" })
+  @ApiParam({ name: "id", description: "Transaction ID" })
+  @ApiResponse({ status: 200, description: "Kora transaction details" })
+  @ApiResponse({ status: 404, description: "Transaction not found" })
+  async getKorapayTransaction(@Param("id") id: string) {
+    return this.adminService.getKorapayTransaction(id);
+  }
+
+  // ============================================
   // APP SETTINGS
   // ============================================
 

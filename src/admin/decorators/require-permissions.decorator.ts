@@ -129,6 +129,10 @@ export const PERMISSIONS = {
 
   // Promos
   PROMOS_MANAGE: 'promos.manage',
+
+  // Tasks
+  TASKS_VIEW: 'tasks.view',
+  TASKS_MANAGE: 'tasks.manage',
 } as const;
 
 /** All permission values as an array */

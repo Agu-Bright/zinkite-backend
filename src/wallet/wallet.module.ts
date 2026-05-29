@@ -13,6 +13,7 @@ import {
   WalletTransactionSchema,
 } from './schemas/wallet-transaction.schema';
 import { PaystackModule } from '../paystack/paystack.module';
+import { KorapayModule } from '../korapay/korapay.module';
 import { UsersModule } from '../users/users.module';
 import { BankAccount, BankAccountSchema } from './schemas/bank-account.schema';
 import { WithdrawalService } from './withdrawal.service';
@@ -23,6 +24,7 @@ import {
   VirtualAccountSchema,
 } from './schemas/virtual-account.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
+import { UserTaskModule } from '../user-tasks/user-task.module';
 
 
 @Module({
@@ -36,6 +38,8 @@ import { User, UserSchema } from '../users/schemas/user.schema';
       { name: User.name, schema: UserSchema },
     ]),
     forwardRef(() => PaystackModule),
+    forwardRef(() => KorapayModule),
+    forwardRef(() => UserTaskModule),
     UsersModule, // Import UsersModule so PinGuard can access UsersService
   ],
   controllers: [WalletController, WithdrawalController],

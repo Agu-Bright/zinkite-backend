@@ -20,7 +20,16 @@ export interface UploadResult {
   bytes: number;
 }
 
-const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
+const ALLOWED_IMAGE_TYPES = [
+  'image/jpeg',
+  'image/jpg', // some clients send this non-standard variant
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/svg+xml',
+  'image/heic', // iOS native format
+  'image/heif',
+];
 
 @Injectable()
 export class UploadsService {
@@ -124,6 +133,13 @@ export class UploadsService {
    */
   async uploadPromoBanner(file: Express.Multer.File): Promise<UploadResult> {
     return this.uploadFile(file, 'promo-banners', 10);
+  }
+
+  /**
+   * Upload a gift card shop product image.
+   */
+  async uploadShopProductImage(file: Express.Multer.File): Promise<UploadResult> {
+    return this.uploadFile(file, 'giftcard-shop', 5);
   }
 
   /**

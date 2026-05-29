@@ -456,15 +456,22 @@ export class GiftCardBuyService {
     const pricePreview = await this.calculatePrice(dto.productId, dto.unitPrice);
     const totalPriceNgn = pricePreview.totalPrice * quantity;
     const totalChargedKobo = toKobo(totalPriceNgn);
-
-    const session = await this.connection.startSession();
-    session.startTransaction();
-
     const reference = generateReference('GCB');
+
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 1 — Atomic DB txn: create order (PENDING) + debit wallet
+    //
+    // IMPORTANT: do NOT call external APIs (Reloadly) from inside a
+    // MongoDB transaction. The txn can time out (default 60s) or fail
+    // to commit after Reloadly has already placed the order — classic
+    // dual-write bug where the user pays $0 and we pay Reloadly.
+    // ═══════════════════════════════════════════════════════════
+    const session = await this.connection.startSession();
     let orderDoc: GiftCardBuyOrderDocument | null = null;
 
     try {
-      // 1. Create pending order
+      session.startTransaction();
+
       const [created] = await this.orderModel.create(
         [
           {
@@ -493,7 +500,6 @@ export class GiftCardBuyService {
       );
       orderDoc = created;
 
-      // 2. Debit wallet
       const walletTxn = await this.walletService.debitWallet({
         userId,
         amount: totalChargedKobo,
@@ -516,7 +522,36 @@ export class GiftCardBuyService {
       orderDoc.status = BuyOrderStatus.PROCESSING;
       await orderDoc.save({ session });
 
-      // 3. Call Reloadly API
+      await session.commitTransaction();
+    } catch (error: any) {
+      await session.abortTransaction();
+      this.logger.error(`Phase 1 failed (wallet debit / order create): ${reference}`, error);
+      if (error.status) throw error;
+      throw new InternalServerErrorException(
+        'Gift card purchase failed. Your wallet was not charged.',
+      );
+    } finally {
+      session.endSession();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 2 — External Reloadly call (no DB txn).
+    //
+    // `customIdentifier: reference` makes Reloadly calls idempotent
+    // on their side — retries with the same reference return the
+    // same order rather than creating a duplicate.
+    //
+    // On success: update order with Reloadly details + redeem codes.
+    // On failure: mark order FAILED + refund wallet via a separate
+    // credit transaction (reference `${reference}-REFUND`).
+    // ═══════════════════════════════════════════════════════════
+    if (!orderDoc) {
+      // Unreachable: phase 1 either assigns orderDoc or throws.
+      throw new InternalServerErrorException('Order state lost after phase 1');
+    }
+    const order = orderDoc; // narrowed, no longer nullable
+
+    try {
       const reloadlyOrder = await this.reloadlyService.orderGiftCard({
         productId: product.reloadlyProductId,
         countryCode: product.countryCode,
@@ -525,61 +560,89 @@ export class GiftCardBuyService {
         customIdentifier: reference,
       });
 
-      orderDoc.reloadlyTransactionId = reloadlyOrder.transactionId;
-      orderDoc.reloadlyStatus = reloadlyOrder.status;
+      order.reloadlyTransactionId = reloadlyOrder.transactionId;
+      order.reloadlyStatus = reloadlyOrder.status;
 
-      // 4. Fetch redeem codes (store ALL for multi-quantity orders)
+      // Fetch redeem codes (store ALL for multi-quantity orders)
       try {
         const codes = await this.reloadlyService.getRedeemCodes(
           reloadlyOrder.transactionId,
         );
         if (codes && codes.length > 0) {
-          orderDoc.redeemCodes = codes.map((c) => ({
+          order.redeemCodes = codes.map((c) => ({
             cardNumber: c.cardNumber || null,
             pinCode: c.pinCode || null,
           }));
           // Backward compat: first code in top-level fields
-          orderDoc.cardNumber = codes[0].cardNumber || null;
-          orderDoc.pinCode = codes[0].pinCode || null;
+          order.cardNumber = codes[0].cardNumber || null;
+          order.pinCode = codes[0].pinCode || null;
         }
       } catch (codeError: any) {
         this.logger.warn(
           `Failed to fetch redeem codes for ${reference}: ${codeError.message}. Will retry later.`,
         );
-        // Store in meta for manual retrieval
-        orderDoc.meta = {
-          ...orderDoc.meta,
+        order.meta = {
+          ...order.meta,
           redeemCodeFetchFailed: true,
           redeemCodeError: codeError.message,
         };
       }
 
-      // 5. Mark success
-      orderDoc.status = BuyOrderStatus.SUCCESS;
-      await orderDoc.save({ session });
+      order.status = BuyOrderStatus.SUCCESS;
+      await order.save();
 
-      await session.commitTransaction();
       this.logger.log(`Gift card purchased: ${reference} — ${product.brandName} $${dto.unitPrice}`);
-
-      return orderDoc;
+      return order;
     } catch (error: any) {
-      await session.abortTransaction();
-      this.logger.error(`Gift card purchase failed: ${reference}`, error);
+      this.logger.error(
+        `Phase 2 failed (Reloadly call): ${reference} — refunding wallet`,
+        error,
+      );
 
-      // Update order with failure (outside transaction)
-      if (orderDoc) {
-        await this.orderModel.findByIdAndUpdate(orderDoc._id, {
-          status: BuyOrderStatus.FAILED,
-          failureReason: error.message,
-        });
+      // Mark order failed
+      order.status = BuyOrderStatus.FAILED;
+      order.failureReason = error.message || 'Reloadly order failed';
+      try {
+        await order.save();
+      } catch (saveErr: any) {
+        this.logger.error(
+          `Failed to mark order FAILED: ${reference} — ${saveErr.message}`,
+        );
       }
 
-      if (error.status) throw error; // Re-throw HTTP exceptions
+      // Refund the user's wallet via a separate credit transaction.
+      // Use a distinct reference so the unique index doesn't collide
+      // with the original debit and so the refund is queryable.
+      try {
+        await this.walletService.creditWallet({
+          userId,
+          amount: totalChargedKobo,
+          category: TransactionCategory.REFUND,
+          source: TransactionSource.GIFTCARD_RELOADLY,
+          reference: `${reference}-REFUND`,
+          narration: `Refund: failed gift card purchase (${product.brandName} ${product.productName})`,
+          meta: {
+            orderId: order._id.toString(),
+            originalReference: reference,
+            reason: error.message || 'Reloadly order failed',
+          },
+        });
+        this.logger.log(`Refunded ${totalChargedKobo} kobo for failed order: ${reference}`);
+      } catch (refundErr: any) {
+        // CRITICAL: wallet was debited but refund failed. This requires
+        // manual reconciliation — log loudly so ops can address it.
+        this.logger.error(
+          `CRITICAL: refund failed for ${reference} — user ${userId} ` +
+            `was debited ${totalChargedKobo} kobo with no refund. ` +
+            `Error: ${refundErr.message}. MANUAL RECONCILIATION REQUIRED.`,
+          refundErr.stack,
+        );
+      }
+
+      if (error.status) throw error;
       throw new InternalServerErrorException(
-        'Gift card purchase failed. Your wallet was not charged.',
+        'Gift card purchase failed. Your wallet has been refunded.',
       );
-    } finally {
-      session.endSession();
     }
   }
 
