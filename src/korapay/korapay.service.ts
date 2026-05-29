@@ -13,6 +13,7 @@ import {
   Injectable,
   Logger,
   InternalServerErrorException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -240,15 +241,34 @@ export class KorapayService {
     bankCode: string;
     accountNumber: string;
   }): Promise<{ accountName: string; accountNumber: string }> {
-    const response = await this.apiClient.post('/misc/banks/resolve', {
-      bank: params.bankCode,
-      account: params.accountNumber,
-    });
-    const data = response.data?.data || {};
-    return {
-      accountName: data.account_name,
-      accountNumber: data.account_number || params.accountNumber,
-    };
+    let response;
+    try {
+      response = await this.apiClient.post('/misc/banks/resolve', {
+        bank: params.bankCode,
+        account: params.accountNumber,
+      });
+    } catch (error) {
+      const msg = error.response?.data?.message || 'Could not verify account. Check the details.';
+      this.logger.warn(`Kora resolve failed: ${msg}`);
+      throw new BadRequestException(msg);
+    }
+
+    // Be resilient to payload-shape variations across Kora API versions.
+    const body = response.data || {};
+    const data = body.data || body;
+    const accountName =
+      data.account_name || data.accountName || body.account_name;
+    const accountNumber =
+      data.account_number || data.accountNumber || params.accountNumber;
+
+    if (!accountName) {
+      this.logger.warn(
+        `Kora resolve returned no account name for ${params.accountNumber}/${params.bankCode}`,
+      );
+      throw new BadRequestException('Could not resolve account name');
+    }
+
+    return { accountName, accountNumber };
   }
 
   /**
@@ -257,10 +277,14 @@ export class KorapayService {
   async listBanks(): Promise<Array<{ name: string; code: string }>> {
     try {
       const response = await this.apiClient.get('/misc/banks?countryCode=NG');
-      return (response.data?.data || []).map((b: any) => ({
-        name: b.name,
-        code: b.code,
-      }));
+      const list = response.data?.data || response.data || [];
+      const banks = (Array.isArray(list) ? list : [])
+        .map((b: any) => ({ name: b.name, code: b.code }))
+        .filter((b: any) => b.name && b.code);
+      if (banks.length === 0) {
+        this.logger.warn('Kora banks list returned empty');
+      }
+      return banks;
     } catch (error) {
       this.logger.error('Failed to fetch Kora banks list', error.response?.data);
       throw new InternalServerErrorException('Could not fetch banks list');
