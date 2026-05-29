@@ -72,6 +72,7 @@ export interface DisburseResult {
 export class KorapayService {
   private readonly logger = new Logger(KorapayService.name);
   private readonly apiClient: AxiosInstance;
+  private readonly publicApiClient: AxiosInstance;
   private readonly secretKey: string;
   private readonly publicKey: string;
   private readonly webhookSecret: string;
@@ -95,6 +96,18 @@ export class KorapayService {
       baseURL: baseUrl,
       headers: {
         Authorization: `Bearer ${this.secretKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+    });
+
+    // Kora's /misc/banks and /misc/banks/resolve endpoints require the
+    // PUBLIC key (not the secret). Using the secret key on those returns
+    // a 401 "Invalid authentication token".
+    this.publicApiClient = axios.create({
+      baseURL: baseUrl,
+      headers: {
+        Authorization: `Bearer ${this.publicKey}`,
         'Content-Type': 'application/json',
       },
       timeout: 30000,
@@ -243,7 +256,8 @@ export class KorapayService {
   }): Promise<{ accountName: string; accountNumber: string }> {
     let response;
     try {
-      response = await this.apiClient.post('/misc/banks/resolve', {
+      // Bank resolve requires the PUBLIC key, not the secret.
+      response = await this.publicApiClient.post('/misc/banks/resolve', {
         bank: params.bankCode,
         account: params.accountNumber,
       });
@@ -276,7 +290,8 @@ export class KorapayService {
    */
   async listBanks(): Promise<Array<{ name: string; code: string }>> {
     try {
-      const response = await this.apiClient.get('/misc/banks?countryCode=NG');
+      // Bank list requires the PUBLIC key, not the secret.
+      const response = await this.publicApiClient.get('/misc/banks?countryCode=NG');
       const list = response.data?.data || response.data || [];
       const banks = (Array.isArray(list) ? list : [])
         .map((b: any) => ({ name: b.name, code: b.code }))

@@ -170,7 +170,10 @@ export class WalletService {
       balance: wallet.balance,
       currency: wallet.currency,
       status: wallet.status,
-      formattedBalance: toNaira(wallet.balance).toFixed(2),
+      formattedBalance: toNaira(wallet.balance).toLocaleString("en-NG", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }),
     };
   }
 
@@ -814,47 +817,66 @@ export class WalletService {
     // ── Kora path (active provider) ──
     if (provider === 'korapay') {
       const accountReference = `VBA_${userId}`;
-      const vba = await this.korapayService.createVirtualAccount({
-        accountReference,
-        accountName: `${firstName} ${lastName}`.trim(),
-        customerEmail: user.email,
-        customerName: `${firstName} ${lastName}`.trim(),
-      });
+      // Kora's permanent VBA requires the user's BVN. We don't collect BVN
+      // anywhere yet, so this can legitimately fail. Catch it and fall back
+      // gracefully — the user can still fund via card checkout.
+      try {
+        const vba = await this.korapayService.createVirtualAccount({
+          accountReference,
+          accountName: `${firstName} ${lastName}`.trim(),
+          customerEmail: user.email,
+          customerName: `${firstName} ${lastName}`.trim(),
+        });
 
-      // Legacy Paystack DVA present → migrate the record in place so the user
-      // stops seeing the old account on the Bank tab.
-      if (existing) {
-        existing.provider = 'korapay';
-        existing.korapayAccountReference = vba.accountReference;
-        existing.accountName = vba.accountName;
-        existing.accountNumber = vba.accountNumber;
-        existing.bankName = vba.bankName;
-        existing.bankCode = vba.bankCode;
-        existing.bankSlug = null;
-        existing.paystackCustomerCode = null;
-        existing.paystackDvaId = null;
-        existing.status = VirtualAccountStatus.ACTIVE;
-        existing.meta = vba.rawResponse;
-        const migrated = await existing.save();
-        this.logger.log(`Migrated user ${userId} → Kora VBA: ${vba.accountNumber} (${vba.bankName})`);
-        return migrated;
+        // Legacy Paystack DVA present → migrate the record in place
+        if (existing) {
+          existing.provider = 'korapay';
+          existing.korapayAccountReference = vba.accountReference;
+          existing.accountName = vba.accountName;
+          existing.accountNumber = vba.accountNumber;
+          existing.bankName = vba.bankName;
+          existing.bankCode = vba.bankCode;
+          existing.bankSlug = null;
+          existing.paystackCustomerCode = null;
+          existing.paystackDvaId = null;
+          existing.status = VirtualAccountStatus.ACTIVE;
+          existing.meta = vba.rawResponse;
+          const migrated = await existing.save();
+          this.logger.log(`Migrated user ${userId} → Kora VBA: ${vba.accountNumber} (${vba.bankName})`);
+          return migrated;
+        }
+
+        const koraVa = new this.virtualAccountModel({
+          userId: new Types.ObjectId(userId),
+          provider: 'korapay',
+          korapayAccountReference: vba.accountReference,
+          accountName: vba.accountName,
+          accountNumber: vba.accountNumber,
+          bankName: vba.bankName,
+          bankCode: vba.bankCode,
+          status: VirtualAccountStatus.ACTIVE,
+          meta: vba.rawResponse,
+        });
+
+        const savedKora = await koraVa.save();
+        this.logger.log(`Kora VBA created for user ${userId}: ${vba.accountNumber} (${vba.bankName})`);
+        return savedKora;
+      } catch (err: any) {
+        const koraMsg = err?.response?.data?.message || err?.message || 'unknown';
+        this.logger.warn(
+          `Kora VBA creation failed for user ${userId}: ${koraMsg}. Falling back...`,
+        );
+        // If user has a legacy Paystack DVA, return it — those bank accounts
+        // remain valid for incoming transfers even after the provider toggle.
+        if (existing) {
+          this.logger.log(`Returning legacy Paystack DVA for user ${userId} as fallback`);
+          return existing;
+        }
+        // No fallback available — surface a clean message instead of 500
+        throw new BadRequestException(
+          'Bank-transfer funding is not yet available. Please use card payment instead.',
+        );
       }
-
-      const koraVa = new this.virtualAccountModel({
-        userId: new Types.ObjectId(userId),
-        provider: 'korapay',
-        korapayAccountReference: vba.accountReference,
-        accountName: vba.accountName,
-        accountNumber: vba.accountNumber,
-        bankName: vba.bankName,
-        bankCode: vba.bankCode,
-        status: VirtualAccountStatus.ACTIVE,
-        meta: vba.rawResponse,
-      });
-
-      const savedKora = await koraVa.save();
-      this.logger.log(`Kora VBA created for user ${userId}: ${vba.accountNumber} (${vba.bankName})`);
-      return savedKora;
     }
 
     // ── Paystack path (rollback / legacy) ──
