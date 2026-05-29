@@ -211,7 +211,6 @@ export class WebhooksController {
     const reference = data.reference;
     const amountKobo = toKobo(Number(data.amount) || 0);
     const metadata = data.metadata || {};
-    const userId = metadata.userId;
 
     if (!reference) {
       this.logger.warn('Kora webhook missing reference');
@@ -225,9 +224,31 @@ export class WebhooksController {
     }
     await this.korapayService.updateTransactionFromWebhook(reference, fullEvent);
 
-    if (metadata.type !== 'WALLET_TOPUP' || !userId) {
+    // ── Resolve userId with fallback ──
+    // Some Kora channels (bank transfer / Pay With Bank) don't always echo the
+    // metadata we set at init. We saved a KorapayTransaction record with the
+    // userId at /charges/initialize time, so look it up by reference.
+    let userId: string | undefined = metadata.userId;
+    let topupType: string | undefined = metadata.type;
+    let userIdSource = 'metadata';
+
+    if (!userId || topupType !== 'WALLET_TOPUP') {
+      const record = await this.korapayService.getTransactionByReference(reference);
+      if (record) {
+        userId = userId || record.userId?.toString();
+        topupType = topupType || (record.metadata as any)?.type;
+        userIdSource = 'record';
+      }
+    }
+
+    this.logger.log(
+      `Kora charge.success resolution: ref=${reference}, amount=₦${amountKobo / 100}, ` +
+      `userId=${userId || 'missing'}, type=${topupType || 'missing'}, source=${userIdSource}`,
+    );
+
+    if (!userId || topupType !== 'WALLET_TOPUP') {
       this.logger.warn(
-        `Kora charge.success not credited: type=${metadata.type}, userId=${userId || 'missing'}`,
+        `Kora charge.success skipped — could not resolve userId or type from metadata or record: ref=${reference}`,
       );
       return;
     }
@@ -253,7 +274,9 @@ export class WebhooksController {
         },
       });
 
-      this.logger.log(`Wallet credited (Kora): userId=${userId}, amount=₦${amountKobo / 100}, ref=${reference}`);
+      this.logger.log(
+        `Wallet credited (Kora): userId=${userId}, amount=₦${amountKobo / 100}, ref=${reference}, source=${userIdSource}`,
+      );
 
       this.userTaskService.completeTask(userId, 'FUND_WALLET').catch((e) =>
         this.logger.debug(`Task completion skipped for FUND_WALLET: ${e.message}`),
@@ -287,17 +310,11 @@ export class WebhooksController {
     const reference = data.reference;
     const amount = data.amount; // In kobo
     const metadata = data.metadata || {};
-    const userId = metadata.userId;
 
     if (!reference) {
       this.logger.warn('Paystack webhook missing reference');
       return;
     }
-
-    this.logger.log(
-      `charge.success: ref=${reference}, amount=${amount}, userId=${userId || 'N/A'}, ` +
-      `type=${metadata.type || 'N/A'}, channel=${data.channel}`,
-    );
 
     // Check if already processed (idempotency)
     const isProcessed = await this.paystackService.isTransactionProcessed(reference);
@@ -309,8 +326,29 @@ export class WebhooksController {
     // Update Paystack transaction record
     await this.paystackService.updateTransactionFromWebhook(reference, fullEvent);
 
+    // ── Resolve userId with fallback ──
+    // If Paystack didn't echo our metadata back (rare but observed),
+    // look up the PaystackTransaction record we saved at init time.
+    let userId: string | undefined = metadata.userId;
+    let topupType: string | undefined = metadata.type;
+    let userIdSource = 'metadata';
+
+    if (!userId || topupType !== 'WALLET_TOPUP') {
+      const record = await this.paystackService.getTransactionByReference(reference);
+      if (record) {
+        userId = userId || record.userId?.toString();
+        topupType = topupType || (record.metadata as any)?.type;
+        userIdSource = 'record';
+      }
+    }
+
+    this.logger.log(
+      `Paystack charge.success resolution: ref=${reference}, amount=₦${amount / 100}, ` +
+      `userId=${userId || 'missing'}, type=${topupType || 'missing'}, channel=${data.channel}, source=${userIdSource}`,
+    );
+
     // Credit wallet if this is a top-up
-    if (metadata.type === 'WALLET_TOPUP' && userId) {
+    if (topupType === 'WALLET_TOPUP' && userId) {
       try {
         // Check if wallet transaction already exists (double idempotency)
         const existingTxn = await this.walletService.findTransactionByReference(reference);
@@ -334,7 +372,9 @@ export class WebhooksController {
           },
         });
 
-        this.logger.log(`Wallet credited: userId=${userId}, amount=₦${amount / 100}, ref=${reference}`);
+        this.logger.log(
+          `Wallet credited: userId=${userId}, amount=₦${amount / 100}, ref=${reference}, source=${userIdSource}`,
+        );
 
         // Auto-complete FUND_WALLET task
         this.userTaskService.completeTask(userId, 'FUND_WALLET').catch((e) =>
@@ -361,8 +401,8 @@ export class WebhooksController {
       }
     } else {
       this.logger.warn(
-        `charge.success not processed: metadata.type=${metadata.type}, userId=${userId || 'missing'}. ` +
-        `Full metadata: ${JSON.stringify(metadata)}`,
+        `charge.success skipped — could not resolve userId or type from metadata or record: ref=${reference}, ` +
+        `metadata=${JSON.stringify(metadata)}`,
       );
     }
   }
