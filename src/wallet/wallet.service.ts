@@ -580,11 +580,20 @@ export class WalletService {
         this.configService.get<string>("BACKEND_URL") ||
         "https://backend.zinkitex.com";
 
+      // Kora redirects the user's browser to this URL on successful payment.
+      // The mobile WebView intercepts navigation to this URL as the "done"
+      // signal, stops loading, and triggers verify + close. The URL doesn't
+      // need to resolve to a real page — it's a marker the client detects.
+      const redirectUrl =
+        dto.callbackUrl ||
+        this.configService.get<string>("KORAPAY_REDIRECT_URL") ||
+        "https://zinkitex.com/topup-success";
+
       const koraResult = await this.korapayService.initializeCharge({
         email,
         amount: dto.amount, // Kora uses major NGN units, not kobo
         reference,
-        redirectUrl: dto.callbackUrl,
+        redirectUrl,
         notificationUrl: `${backendUrl}/webhooks/korapay`,
         metadata: { userId, type: "WALLET_TOPUP" },
       });
@@ -654,10 +663,11 @@ export class WalletService {
       if (!verification.success) {
         return { success: false, message: "Payment verification failed" };
       }
+      const amountKobo = toKobo(verification.amount);
       try {
         await this.creditWallet({
           userId,
-          amount: toKobo(verification.amount), // Kora returns major NGN units
+          amount: amountKobo, // Kora returns major NGN units
           category: TransactionCategory.TOPUP,
           source: TransactionSource.KORAPAY_TOPUP,
           narration: `Wallet top-up via Kora Pay`,
@@ -667,6 +677,10 @@ export class WalletService {
             channel: verification.channel,
           },
         });
+        // Push notification (best-effort, fires only on the credit path —
+        // the duplicate-key branch below skips it so we don't double-notify
+        // when the webhook arrives later).
+        this.sendTopupNotification(userId, amountKobo, reference);
         return { success: true, message: "Wallet topped up successfully" };
       } catch (error) {
         if (error.code === 11000) {
@@ -698,7 +712,8 @@ export class WalletService {
           channel: verification.channel,
         },
       });
-
+      // Push notification (best-effort, fires only on the credit path)
+      this.sendTopupNotification(userId, verification.amount, reference);
       return { success: true, message: "Wallet topped up successfully" };
     } catch (error) {
       if (error.code === 11000) {
@@ -707,6 +722,30 @@ export class WalletService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Fire a "Wallet Funded" push + in-app notification.
+   * Best-effort — never throws.
+   */
+  private sendTopupNotification(
+    userId: string,
+    amountKobo: number,
+    reference: string,
+  ): void {
+    const amountNaira = toNaira(amountKobo);
+    this.notificationsService
+      .sendToUser(
+        userId,
+        "Wallet Funded",
+        `Your wallet has been funded with ₦${amountNaira.toLocaleString("en-NG")}.`,
+        { type: "wallet_topup", reference },
+        NotificationType.TRANSACTION,
+        "wallet_topup",
+      )
+      .catch((err) =>
+        this.logger.error(`Failed to send topup notification: ${err.message}`),
+      );
   }
 
   async updateTransactionStatus(
