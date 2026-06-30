@@ -398,19 +398,18 @@ export class GiftCardsService implements OnModuleInit {
 
     const catOid = new Types.ObjectId(dto.categoryId);
 
-    // Check for overlapping ranges
-    const overlappingRate = await this.rateModel.findOne({
+    // One rate per category (Cardviro pattern). An existing ACTIVE rate must
+    // be edited rather than duplicated — keeps rate lookup unambiguous and
+    // the admin UI honest.
+    const existingRate = await this.rateModel.findOne({
       categoryId: this.categoryIdFilter(dto.categoryId),
       status: RateStatus.ACTIVE,
-      $or: [
-        { minValue: { $lte: dto.minValue }, maxValue: { $gte: dto.minValue } },
-        { minValue: { $lte: dto.maxValue }, maxValue: { $gte: dto.maxValue } },
-        { minValue: { $gte: dto.minValue }, maxValue: { $lte: dto.maxValue } },
-      ],
     });
 
-    if (overlappingRate) {
-      throw new ConflictException('A rate with overlapping value range already exists');
+    if (existingRate) {
+      throw new ConflictException(
+        'A rate already exists for this category. Edit the existing rate instead of creating a new one.',
+      );
     }
 
     // Explicitly cast categoryId to ObjectId to ensure correct BSON type storage
@@ -470,16 +469,16 @@ export class GiftCardsService implements OnModuleInit {
       );
     }
 
-    // Use flexible filter to match categoryId regardless of stored BSON type
+    // One rate per category — look up purely by categoryId + ACTIVE. The
+    // category itself defines the min/max range (validated above); the rate
+    // row no longer needs its own range filter.
     const rate = await this.rateModel.findOne({
       categoryId: this.categoryIdFilter(categoryId),
       status: RateStatus.ACTIVE,
-      minValue: { $lte: cardValue },
-      maxValue: { $gte: cardValue },
     });
 
     if (!rate) {
-      throw new NotFoundException('No rate found for this card value');
+      throw new NotFoundException('No active rate found for this category');
     }
 
     const amountNgn = cardValue * rate.rate;
@@ -557,6 +556,7 @@ export class GiftCardsService implements OnModuleInit {
       rateId: new Types.ObjectId(rateInfo.rateId),
       reference,
       cardValueUsd: dto.cardValueUsd,
+      currency: category.currency,
       rateApplied: rateInfo.rate,
       amountNgn: amountNgnKobo,
       cardCode: dto.cardCode || null,

@@ -18,7 +18,7 @@ import {
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { BrandStatus } from '../schemas/gift-card-brand.schema';
-import { CategoryStatus, CardType } from '../schemas/gift-card-category.schema';
+import { CategoryStatus, CardType, CategoryCurrency } from '../schemas/gift-card-category.schema';
 import { RateStatus } from '../schemas/gift-card-rate.schema';
 import { TradeStatus } from '../schemas/gift-card-trade.schema';
 import { PaginationDto } from '../../common/dto/pagination.dto';
@@ -114,11 +114,21 @@ export class CreateCategoryDto {
   @IsEnum(CardType)
   cardType: CardType;
 
+  @ApiPropertyOptional({ description: 'Currency for card value', enum: CategoryCurrency, default: CategoryCurrency.USD })
+  @IsOptional()
+  @IsEnum(CategoryCurrency)
+  currency?: CategoryCurrency;
+
   @ApiPropertyOptional({ description: 'Country/Region', example: 'USA' })
   @IsOptional()
   @IsString()
   @MaxLength(100)
   country?: string;
+
+  @ApiPropertyOptional({ description: 'Country flag image URL' })
+  @IsOptional()
+  @IsString()
+  flagUrl?: string;
 
   @ApiPropertyOptional({ description: 'Category description' })
   @IsOptional()

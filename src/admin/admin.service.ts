@@ -268,9 +268,27 @@ export class AdminService {
       .select("-passwordHash -transactionPinHash")
       .sort({ createdAt: -1 })
       .skip(calculateSkip(page, limit))
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
-    return paginate(users, total, page, limit);
+    // Batch-fetch wallets for every user on this page so the admin table can
+    // show balance alongside each row without an N+1 lookup.
+    const userIds = users.map((u) => u._id);
+    const wallets = await this.walletModel
+      .find({ userId: { $in: userIds } })
+      .select("userId balance")
+      .lean();
+    const balanceByUser = new Map<string, number>();
+    for (const w of wallets) {
+      balanceByUser.set(String(w.userId), toNaira(w.balance));
+    }
+
+    const enriched = users.map((u) => ({
+      ...u,
+      walletBalanceNaira: balanceByUser.get(String(u._id)) ?? 0,
+    }));
+
+    return paginate(enriched as any, total, page, limit);
   }
 
   /**

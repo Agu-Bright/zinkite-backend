@@ -16,6 +16,14 @@ export enum CategoryStatus {
 export enum CardType {
   PHYSICAL = 'PHYSICAL',
   ECODE = 'ECODE',
+  OTHER = 'OTHER',
+}
+
+export enum CategoryCurrency {
+  USD = 'USD',
+  EUR = 'EUR',
+  GBP = 'GBP',
+  CAD = 'CAD',
 }
 
 @Schema({
@@ -47,9 +55,17 @@ export class GiftCardCategory {
   @Prop({ type: String, enum: CardType, required: true })
   cardType: CardType;
 
+  @ApiProperty({ description: 'Currency for card value', enum: CategoryCurrency })
+  @Prop({ type: String, enum: CategoryCurrency, default: CategoryCurrency.USD })
+  currency: CategoryCurrency;
+
   @ApiProperty({ description: 'Country/Region', example: 'USA', required: false })
   @Prop({ type: String, default: null })
   country: string | null;
+
+  @ApiProperty({ description: 'Country flag image URL', required: false })
+  @Prop({ type: String, default: null })
+  flagUrl: string | null;
 
   @ApiProperty({ description: 'Category description', required: false })
   @Prop({ type: String, default: null })

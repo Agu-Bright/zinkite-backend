@@ -5,6 +5,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
 import { ApiProperty } from '@nestjs/swagger';
+import { CategoryCurrency } from './gift-card-category.schema';
 
 export type GiftCardTradeDocument = GiftCardTrade & Document;
 
@@ -49,11 +50,15 @@ export class GiftCardTrade {
   @Prop({ type: String, required: true, unique: true })
   reference: string;
 
-  @ApiProperty({ description: 'Card value in USD', example: 50 })
+  @ApiProperty({ description: 'Card value in the category currency', example: 50 })
   @Prop({ type: Number, required: true, min: 0 })
   cardValueUsd: number;
 
-  @ApiProperty({ description: 'Exchange rate applied (NGN per USD)', example: 450 })
+  @ApiProperty({ description: 'Snapshotted currency at trade time', enum: CategoryCurrency })
+  @Prop({ type: String, enum: CategoryCurrency, default: CategoryCurrency.USD })
+  currency: CategoryCurrency;
+
+  @ApiProperty({ description: 'Exchange rate applied (NGN per 1 unit of currency)', example: 450 })
   @Prop({ type: Number, required: true, min: 0 })
   rateApplied: number;
 
