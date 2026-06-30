@@ -82,10 +82,10 @@ export class Withdrawal {
   @Prop({ type: String, required: true })
   accountName: string;
 
-  // ── Paystack transfer fields ──
+  // ── Paystack transfer fields (legacy / no longer required for manual-payout flow) ──
   @ApiProperty({ description: "Paystack transfer recipient code" })
-  @Prop({ type: String, required: true })
-  paystackRecipientCode: string;
+  @Prop({ type: String, default: null })
+  paystackRecipientCode: string | null;
 
   @ApiProperty({ description: "Paystack transfer code returned by /transfer" })
   @Prop({ type: String, default: null })
@@ -112,6 +112,19 @@ export class Withdrawal {
   })
   @Prop({ type: Date, default: null })
   completedAt: Date | null;
+
+  // ── Manual-payout audit trail ──
+  @ApiProperty({ description: "Admin user who marked this withdrawal as paid/failed" })
+  @Prop({ type: Types.ObjectId, ref: "AdminUser", default: null })
+  processedBy: Types.ObjectId | null;
+
+  @ApiProperty({ description: "Timestamp the admin took action on this withdrawal" })
+  @Prop({ type: Date, default: null })
+  processedAt: Date | null;
+
+  @ApiProperty({ description: "Optional note from the admin (proof of transfer, reason for failure, etc.)" })
+  @Prop({ type: String, default: null })
+  adminNote: string | null;
 
   createdAt: Date;
   updatedAt: Date;

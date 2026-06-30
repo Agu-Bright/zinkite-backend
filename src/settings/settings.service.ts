@@ -134,6 +134,15 @@ const DEFAULT_SETTINGS: DefaultSetting[] = [
     description: 'Customer support WhatsApp number',
     valueType: 'string',
   },
+  {
+    key: 'admin_notification_emails',
+    value: '',
+    category: SettingCategory.SUPPORT,
+    isPublic: false,
+    description:
+      'Comma-separated list of admin emails that receive withdrawal & ops alerts',
+    valueType: 'string',
+  },
 ];
 
 @Injectable()
@@ -166,6 +175,22 @@ export class SettingsService implements OnModuleInit {
 
   async getAllSettings(): Promise<AppSettingDocument[]> {
     return this.settingModel.find().sort({ category: 1, key: 1 }).exec();
+  }
+
+  /**
+   * Fetch a single setting's value by key. Returns the value as stored,
+   * or `defaultValue` if the key doesn't exist. Used by other services that
+   * need server-side, admin-editable configuration (e.g. admin notification
+   * email list, support contact, etc.).
+   */
+  async getValue<T = any>(key: string, defaultValue: T | null = null): Promise<T | null> {
+    const doc = await this.settingModel
+      .findOne({ key })
+      .select('value')
+      .lean()
+      .exec();
+    if (!doc || doc.value === undefined || doc.value === null) return defaultValue;
+    return doc.value as T;
   }
 
   async getPublicSettings(): Promise<Record<string, any>> {

@@ -38,6 +38,8 @@ import {
   CreditRequestStatus,
 } from "./schemas/wallet-credit-request.schema";
 import { WalletService } from "../wallet/wallet.service";
+import { WithdrawalService } from "../wallet/withdrawal.service";
+import { WithdrawalStatus } from "../wallet/schemas/withdrawal.schema";
 import { GiftCardsService } from "../giftcards/giftcards.service";
 import {
   ManualWalletAdjustmentDto,
@@ -93,10 +95,36 @@ export class AdminService {
     @InjectConnection()
     private readonly connection: Connection,
     private readonly walletService: WalletService,
+    private readonly withdrawalService: WithdrawalService,
     private readonly giftCardsService: GiftCardsService,
     private readonly emailService: EmailService,
     private readonly notificationsService: NotificationsService,
   ) {}
+
+  /**
+   * Admin marks a manual withdrawal as paid or failed.
+   * Delegates to WithdrawalService so refund-on-fail + notifications stay
+   * in one place.
+   */
+  async markWithdrawal(
+    withdrawalId: string,
+    adminUserId: string,
+    status: "SUCCESS" | "FAILED",
+    note?: string,
+  ) {
+    if (status !== "SUCCESS" && status !== "FAILED") {
+      throw new BadRequestException("status must be SUCCESS or FAILED");
+    }
+    const w = await this.withdrawalService.markWithdrawal(
+      withdrawalId,
+      adminUserId,
+      status === "SUCCESS"
+        ? WithdrawalStatus.SUCCESS
+        : WithdrawalStatus.FAILED,
+      note,
+    );
+    return w.toJSON();
+  }
 
   // ============================================
   // DASHBOARD & STATS

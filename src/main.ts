@@ -20,9 +20,9 @@ async function bootstrap() {
 
   // Enable CORS for known clients
   const allowedOrigins = [
-    'https://zinkite.com',
-    'https://www.zinkite.com',
-    'https://admin.zinkite.com',
+    'https://zinkitex.com',
+    'https://www.zinkitex.com',
+    'https://admin.zinkitex.com',
     'http://localhost:3000',
     'http://localhost:3001',
     'http://localhost:3002',

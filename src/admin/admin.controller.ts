@@ -426,6 +426,20 @@ export class AdminController {
     return this.adminService.getWithdrawals(query);
   }
 
+  @Patch("withdrawals/:id/status")
+  @ApiOperation({
+    summary: "Mark a manual withdrawal as paid or failed (admin action)",
+  })
+  @ApiParam({ name: "id", description: "Withdrawal ID" })
+  @ApiResponse({ status: 200, description: "Updated withdrawal" })
+  async markWithdrawal(
+    @Param("id") id: string,
+    @Body() body: { status: "SUCCESS" | "FAILED"; note?: string },
+    @CurrentUser() admin: JwtPayload,
+  ) {
+    return this.adminService.markWithdrawal(id, admin.sub, body.status, body.note);
+  }
+
   // ============================================
   // WALLET CREDIT REQUESTS
   // ============================================

@@ -65,6 +65,7 @@ import { generateReference } from '../common/utils/helpers';
 import { KorapayService } from '../korapay/korapay.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { EmailService } from '../email/email.service';
+import { SettingsService } from '../settings/settings.service';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { UserTaskService } from '../user-tasks/user-task.service';
 
@@ -85,6 +86,7 @@ export class WithdrawalService {
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
     private readonly userTaskService: UserTaskService,
+    private readonly settingsService: SettingsService,
   ) {
     // Paystack axios instance with auth header baked in
     this.paystack = axios.create({
@@ -269,21 +271,11 @@ export class WithdrawalService {
   async initiateWithdrawal(userId: string, dto: InitiateWithdrawalDto) {
     this.logger.log(`Withdrawal request: user=${userId} amount=₦${dto.amount}`);
 
-    const provider = this.getPaymentProvider();
-
     // ── Pre-checks ──
     const bankAccount = await this.bankAccountModel.findOne({
       userId: new Types.ObjectId(userId),
     });
-    if (!bankAccount) {
-      throw new BadRequestException('Please add and verify your bank account first');
-    }
-    // Paystack needs a saved transfer-recipient code; Kora disburses directly to
-    // the stored bank code + account number, so no recipient code is required.
-    if (provider === 'paystack' && !bankAccount.paystackRecipientCode) {
-      throw new BadRequestException('Please add and verify your bank account first');
-    }
-    if (provider === 'korapay' && (!bankAccount.bankCode || !bankAccount.accountNumber)) {
+    if (!bankAccount || !bankAccount.bankCode || !bankAccount.accountNumber) {
       throw new BadRequestException('Please add and verify your bank account first');
     }
 
@@ -299,7 +291,10 @@ export class WithdrawalService {
 
     const reference = generateReference('WDR');
 
-    // ── Step 1-3: Debit wallet + create records atomically ──
+    // ── Debit wallet + create records atomically ──
+    // The withdrawal lands in PROCESSING immediately; an admin reviews it in
+    // the dashboard, sends the money out-of-band, and marks it SUCCESS (or
+    // FAILED → wallet auto-refunds).
     const session = await this.connection.startSession();
     session.startTransaction();
 
@@ -318,8 +313,8 @@ export class WithdrawalService {
             userId: new Types.ObjectId(userId),
             walletId: wallet._id,
             type: TransactionType.DEBIT,
-            category: TransactionCategory.MANUAL, // or add WITHDRAWAL to your enum
-            source: TransactionSource.MANUAL_ADJUSTMENT, // or add WITHDRAWAL
+            category: TransactionCategory.MANUAL,
+            source: TransactionSource.MANUAL_ADJUSTMENT,
             amount: amountKobo,
             currency: 'NGN',
             reference,
@@ -328,7 +323,7 @@ export class WithdrawalService {
             balanceAfter: wallet.balance - amountKobo,
             narration: `Withdrawal to ${bankAccount.bankName} - ${bankAccount.accountNumber}`,
             meta: {
-              withdrawalType: 'PAYSTACK_TRANSFER',
+              withdrawalType: 'MANUAL_PAYOUT',
               bankName: bankAccount.bankName,
               accountNumber: bankAccount.accountNumber,
               accountName: bankAccount.accountName,
@@ -346,14 +341,13 @@ export class WithdrawalService {
             amount: amountKobo,
             currency: 'NGN',
             reference,
-            status: WithdrawalStatus.PENDING,
+            // Land in PROCESSING immediately — the user sees "your transfer is
+            // being sent" UX while an admin actions it.
+            status: WithdrawalStatus.PROCESSING,
             bankName: bankAccount.bankName,
             bankCode: bankAccount.bankCode,
             accountNumber: bankAccount.accountNumber,
             accountName: bankAccount.accountName,
-            ...(bankAccount.paystackRecipientCode && {
-              paystackRecipientCode: bankAccount.paystackRecipientCode,
-            }),
             walletTransactionReference: reference,
           },
         ],
@@ -368,78 +362,180 @@ export class WithdrawalService {
       session.endSession();
     }
 
-    // ── Step 4-5: Initiate the payout via the active provider ──
-    try {
-      if (provider === 'korapay') {
-        const result = await this.korapayService.disburse({
-          reference,
-          amount: dto.amount, // Kora uses major NGN units
-          bankCode: bankAccount.bankCode,
-          accountNumber: bankAccount.accountNumber,
-          accountName: bankAccount.accountName,
-          customerEmail: '',
-          customerName: bankAccount.accountName,
-          narration: `Zinkitex withdrawal ${reference}`,
-        });
+    // ── Notify admins (best-effort, outside the transaction) ──
+    this.notifyAdminsOfWithdrawal(withdrawal, userId).catch((err) =>
+      this.logger.error(`Failed to send admin withdrawal alert: ${err.message}`),
+    );
 
-        this.logger.log(`Kora disburse: ref=${reference} status=${result.status}`);
+    return withdrawal.toJSON();
+  }
 
-        if (result.status === 'success') {
-          withdrawal.status = WithdrawalStatus.SUCCESS;
-          withdrawal.completedAt = new Date();
-        } else {
-          // 'processing' / 'pending' → wait for the transfer webhook
-          withdrawal.status = WithdrawalStatus.PROCESSING;
-        }
+  /**
+   * Send a "new withdrawal needs payout" alert to every email configured in
+   * the `admin_notification_emails` admin setting (comma-separated). Falls
+   * back to the legacy ADMIN_NOTIFICATION_EMAILS / ADMIN_EMAIL env vars only
+   * if the setting is empty, so existing deployments keep working until the
+   * admin saves a value via the dashboard. Best-effort — never throws.
+   */
+  private async notifyAdminsOfWithdrawal(
+    withdrawal: WithdrawalDocument,
+    userId: string,
+  ): Promise<void> {
+    // Primary source: AppSettings (editable from /zinkite-admin/settings)
+    let raw =
+      (await this.settingsService.getValue<string>(
+        'admin_notification_emails',
+        '',
+      )) || '';
 
-        await withdrawal.save();
-        return withdrawal.toJSON();
-      }
+    // Backwards-compat fallback to env vars during transition
+    if (!raw.trim()) {
+      raw =
+        this.configService.get<string>('ADMIN_NOTIFICATION_EMAILS') ||
+        this.configService.get<string>('ADMIN_EMAIL') ||
+        '';
+    }
 
-      // ── Paystack path (fallback / rollback) ──
-      const { data: transferRes } = await this.paystack.post('/transfer', {
-        source: 'balance',
-        reason: `Zinkite withdrawal ${reference}`,
-        amount: amountKobo, // Paystack expects kobo
-        recipient: bankAccount.paystackRecipientCode,
-        reference, // our own unique reference
-      });
+    const recipients = raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => /.+@.+\..+/.test(s));
 
-      const transferData = transferRes.data;
-      this.logger.log(
-        `Paystack transfer initiated: code=${transferData.transfer_code} status=${transferData.status}`,
+    if (recipients.length === 0) {
+      this.logger.warn(
+        'admin_notification_emails setting is empty — withdrawal alert skipped. ' +
+          'Configure it in Admin → Settings → Support.',
       );
+      return;
+    }
 
-      // Update withdrawal with Paystack transfer details
-      withdrawal.paystackTransferCode = transferData.transfer_code;
-      withdrawal.paystackTransferId = transferData.id;
+    const user = await this.userModel
+      .findById(userId)
+      .select('email fullName phone')
+      .lean();
 
-      // Paystack may return "success" immediately for small amounts or return "pending"
-      if (transferData.status === 'success') {
-        withdrawal.status = WithdrawalStatus.SUCCESS;
-        withdrawal.completedAt = new Date();
-      } else if (transferData.status === 'pending' || transferData.status === 'otp') {
-        withdrawal.status = WithdrawalStatus.PROCESSING;
+    for (const email of recipients) {
+      try {
+        await this.emailService.sendAdminWithdrawalAlert(email, {
+          reference: withdrawal.reference,
+          amountNaira: withdrawal.amount / 100,
+          bankName: withdrawal.bankName,
+          accountNumber: withdrawal.accountNumber,
+          accountName: withdrawal.accountName,
+          userEmail: user?.email || '—',
+          userFullName: user?.fullName || '—',
+          userPhone: user?.phone || '—',
+          createdAt: withdrawal.createdAt,
+        });
+        this.logger.log(`Admin withdrawal alert sent to ${email} (ref ${withdrawal.reference})`);
+      } catch (err: any) {
+        this.logger.warn(
+          `Could not send admin withdrawal alert to ${email}: ${err.message}`,
+        );
       }
+    }
+  }
 
-      await withdrawal.save();
-      return withdrawal.toJSON();
-    } catch (err: any) {
-      // Provider rejected the transfer — refund wallet
-      const reason = err.response?.data?.message || err.message || 'Transfer initiation failed';
-      this.logger.error(`Payout failed for ${reference}: ${reason}`);
+  /**
+   * Admin marks a PROCESSING withdrawal as SUCCESS (money already sent out of
+   * band) or FAILED (refund the wallet). Audit fields populated.
+   */
+  async markWithdrawal(
+    withdrawalId: string,
+    adminUserId: string,
+    status: WithdrawalStatus.SUCCESS | WithdrawalStatus.FAILED,
+    note?: string,
+  ): Promise<WithdrawalDocument> {
+    const withdrawal = await this.withdrawalModel.findById(withdrawalId);
+    if (!withdrawal) throw new NotFoundException('Withdrawal not found');
 
-      withdrawal.status = WithdrawalStatus.FAILED;
-      withdrawal.failureReason = reason;
-      await withdrawal.save();
-
-      // Refund wallet
-      await this.refundWallet(withdrawal);
-
+    if (
+      [
+        WithdrawalStatus.SUCCESS,
+        WithdrawalStatus.FAILED,
+        WithdrawalStatus.REVERSED,
+      ].includes(withdrawal.status)
+    ) {
       throw new BadRequestException(
-        `Withdrawal failed: ${reason}. Your wallet has been refunded.`,
+        `Withdrawal is already ${withdrawal.status} — cannot change status`,
       );
     }
+
+    withdrawal.status = status;
+    withdrawal.processedBy = new Types.ObjectId(adminUserId);
+    withdrawal.processedAt = new Date();
+    if (note) withdrawal.adminNote = note;
+
+    if (status === WithdrawalStatus.SUCCESS) {
+      withdrawal.completedAt = new Date();
+      await withdrawal.save();
+      this.logger.log(
+        `Admin ${adminUserId} marked withdrawal ${withdrawal.reference} as SUCCESS`,
+      );
+
+      // Notify user — push + email
+      const amountNaira = withdrawal.amount / 100;
+      this.notificationsService.sendToUser(
+        withdrawal.userId.toString(),
+        'Withdrawal Sent',
+        `Your withdrawal of ₦${amountNaira.toLocaleString('en-NG')} has been sent to your bank account.`,
+        {
+          type: 'withdrawal_update',
+          withdrawalId: withdrawal._id.toString(),
+          status: 'SUCCESS',
+        },
+        'TRANSACTION' as any,
+        'withdrawal_update',
+      ).catch((err) =>
+        this.logger.error(`Withdrawal notification error: ${err.message}`),
+      );
+      this.userModel
+        .findById(withdrawal.userId)
+        .select('email')
+        .lean()
+        .then((user) => {
+          if (user?.email) {
+            this.emailService
+              .sendWithdrawalCompleted(
+                user.email,
+                amountNaira,
+                withdrawal.bankName,
+                withdrawal.accountNumber,
+                withdrawal.reference,
+              )
+              .catch((err) =>
+                this.logger.error(`Email send failed: ${err.message}`),
+              );
+          }
+        });
+      return withdrawal;
+    }
+
+    // FAILED → refund wallet
+    withdrawal.failureReason = note || 'Marked failed by admin';
+    await withdrawal.save();
+    await this.refundWallet(withdrawal);
+    this.logger.log(
+      `Admin ${adminUserId} marked withdrawal ${withdrawal.reference} as FAILED — wallet refunded`,
+    );
+
+    const amountNaira = withdrawal.amount / 100;
+    this.notificationsService.sendToUser(
+      withdrawal.userId.toString(),
+      'Withdrawal Failed',
+      `Your withdrawal of ₦${amountNaira.toLocaleString('en-NG')} failed and your wallet has been refunded.`,
+      {
+        type: 'withdrawal_update',
+        withdrawalId: withdrawal._id.toString(),
+        status: 'FAILED',
+      },
+      'TRANSACTION' as any,
+      'withdrawal_update',
+    ).catch((err) =>
+      this.logger.error(`Withdrawal notification error: ${err.message}`),
+    );
+
+    return withdrawal;
   }
 
   // ═══════════════════════════════════════════════════

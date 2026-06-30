@@ -487,6 +487,95 @@ export class EmailService {
   }
 
   /**
+   * Send admin a "new withdrawal needs payout" alert.
+   * The admin reads this, sends the money out-of-band, then marks the
+   * withdrawal as SUCCESS in the admin dashboard.
+   */
+  async sendAdminWithdrawalAlert(
+    adminEmail: string,
+    params: {
+      reference: string;
+      amountNaira: number;
+      bankName: string;
+      accountNumber: string;
+      accountName: string;
+      userEmail: string;
+      userFullName: string;
+      userPhone: string;
+      createdAt: Date;
+    },
+  ): Promise<boolean> {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; background: #f4f6fb; }
+          .container { max-width: 620px; margin: 0 auto; padding: 24px; }
+          .card { background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
+          .header { background: linear-gradient(135deg, #0055DD, #0080FF); color: white; padding: 24px; }
+          .header h1 { margin: 0; font-size: 22px; }
+          .header .sub { margin: 4px 0 0; opacity: 0.85; font-size: 13px; }
+          .amount-row { background: #f8faff; padding: 22px; text-align: center; }
+          .amount { font-size: 36px; font-weight: 700; color: #0055DD; margin: 4px 0; }
+          .amount-label { color: #6B7280; font-size: 12px; letter-spacing: 1.5px; }
+          .block { padding: 22px; border-top: 1px solid #eee; }
+          .block h3 { margin: 0 0 12px; color: #0055DD; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+          .row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+          .row .label { color: #6B7280; }
+          .row .val { color: #0a0a0a; font-weight: 600; text-align: right; }
+          .cta { text-align: center; padding: 22px; }
+          .cta p { color: #6B7280; font-size: 12px; margin-top: 12px; }
+          .footer { text-align: center; color: #999; font-size: 11px; margin-top: 16px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="card">
+            <div class="header">
+              <h1>\uD83D\uDCB0 New withdrawal needs payout</h1>
+              <p class="sub">A user has initiated a withdrawal \u2014 review and send the money.</p>
+            </div>
+            <div class="amount-row">
+              <div class="amount-label">AMOUNT</div>
+              <div class="amount">\u20A6${params.amountNaira.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+              <div style="color:#6B7280;font-size:12px;">Ref: ${params.reference}</div>
+            </div>
+            <div class="block">
+              <h3>Send to</h3>
+              <div class="row"><span class="label">Account name</span><span class="val">${params.accountName}</span></div>
+              <div class="row"><span class="label">Account number</span><span class="val">${params.accountNumber}</span></div>
+              <div class="row"><span class="label">Bank</span><span class="val">${params.bankName}</span></div>
+            </div>
+            <div class="block">
+              <h3>Customer</h3>
+              <div class="row"><span class="label">Name</span><span class="val">${params.userFullName}</span></div>
+              <div class="row"><span class="label">Email</span><span class="val">${params.userEmail}</span></div>
+              <div class="row"><span class="label">Phone</span><span class="val">${params.userPhone}</span></div>
+              <div class="row"><span class="label">Requested</span><span class="val">${new Date(params.createdAt).toLocaleString('en-NG')}</span></div>
+            </div>
+            <div class="cta">
+              <p>Process this transfer from your business bank, then mark the withdrawal as SUCCESS in the admin dashboard.</p>
+            </div>
+          </div>
+          <div class="footer">
+            <p>Zinkitex admin alert. Do not reply to this email.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    return this.send({
+      to: adminEmail,
+      subject: `\uD83D\uDD14 Payout needed: \u20A6${params.amountNaira.toLocaleString('en-NG')} \u2014 ${params.accountName}`,
+      html,
+      text: `New withdrawal of \u20A6${params.amountNaira.toLocaleString('en-NG')} from ${params.userFullName} (${params.userEmail}). Send to ${params.accountName} / ${params.accountNumber} / ${params.bankName}. Ref ${params.reference}.`,
+    });
+  }
+
+  /**
    * Send withdrawal failed email
    */
   async sendWithdrawalFailed(

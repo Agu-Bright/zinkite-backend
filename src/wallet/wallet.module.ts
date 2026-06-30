@@ -25,6 +25,7 @@ import {
 } from './schemas/virtual-account.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { UserTaskModule } from '../user-tasks/user-task.module';
+import { SettingsModule } from '../settings/settings.module';
 
 
 @Module({
@@ -41,6 +42,7 @@ import { UserTaskModule } from '../user-tasks/user-task.module';
     forwardRef(() => KorapayModule),
     forwardRef(() => UserTaskModule),
     UsersModule, // Import UsersModule so PinGuard can access UsersService
+    SettingsModule, // For admin_notification_emails lookup
   ],
   controllers: [WalletController, WithdrawalController],
   providers: [WalletService, WithdrawalService],

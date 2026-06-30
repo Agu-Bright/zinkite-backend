@@ -67,11 +67,11 @@ export class SaveBankAccountDto {
 
 export class InitiateWithdrawalDto {
   @ApiProperty({
-    description: 'Amount in naira (not kobo). Min ₦100, Max ₦1,000,000',
+    description: 'Amount in naira (not kobo). Min ₦5,000, Max ₦1,000,000',
     example: 5000,
   })
   @IsNumber()
-  @Min(100, { message: 'Minimum withdrawal is ₦100' })
+  @Min(5000, { message: 'Minimum withdrawal is ₦5,000' })
   @Max(1000000, { message: 'Maximum withdrawal is ₦1,000,000' })
   amount: number;
 }
