@@ -6,6 +6,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Param,
   Query,
@@ -30,6 +31,7 @@ import {
   GetRateDto,
   SubmitTradeDto,
   TradeQueryDto,
+  RespondToOfferDto,
   BrandResponse,
   CategoryResponse,
   CalculatedRateResponse,
@@ -201,5 +203,33 @@ export class GiftCardsController {
     @Param('id') id: string,
   ) {
     return this.giftCardsService.cancelTrade(id, user.sub);
+  }
+
+  @Patch('trades/my/:id/offer-response')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary:
+      'Accept or reject the admin-proposed offer on a LOST_DIGITS trade',
+  })
+  @ApiParam({ name: 'id', description: 'Trade ID' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'On accept: wallet credited, trade APPROVED. On reject: trade CANCELLED.',
+    type: TradeResponse,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'No offer exists, or offer already responded to',
+  })
+  @ApiResponse({ status: 404, description: 'Trade not found' })
+  async respondToOffer(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() dto: RespondToOfferDto,
+  ) {
+    return this.giftCardsService.respondToOffer(id, user.sub, dto);
   }
 }

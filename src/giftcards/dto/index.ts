@@ -10,6 +10,7 @@ import {
   IsEnum,
   IsArray,
   IsUrl,
+  IsBoolean,
   Min,
   Max,
   MinLength,
@@ -20,7 +21,7 @@ import { Type, Transform } from 'class-transformer';
 import { BrandStatus } from '../schemas/gift-card-brand.schema';
 import { CategoryStatus, CardType, CategoryCurrency } from '../schemas/gift-card-category.schema';
 import { RateStatus } from '../schemas/gift-card-rate.schema';
-import { TradeStatus } from '../schemas/gift-card-trade.schema';
+import { TradeStatus, TradeType } from '../schemas/gift-card-trade.schema';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 
 // ============================================
@@ -248,12 +249,27 @@ export class SubmitTradeDto {
   @IsMongoId()
   categoryId: string;
 
-  @ApiProperty({ description: 'Card value in USD', example: 50 })
+  @ApiPropertyOptional({
+    description:
+      'Trade type. STANDARD (default) uses category rate math. LOST_DIGITS skips value/rate and awaits an admin-proposed offer.',
+    enum: TradeType,
+    default: TradeType.STANDARD,
+  })
+  @IsOptional()
+  @IsEnum(TradeType)
+  tradeType?: TradeType;
+
+  @ApiPropertyOptional({
+    description:
+      'Card value in the category currency. Required for STANDARD trades, ignored for LOST_DIGITS.',
+    example: 50,
+  })
+  @IsOptional()
   @IsNumber()
   @Min(1)
   @Max(10000)
   @Type(() => Number)
-  cardValueUsd: number;
+  cardValueUsd?: number;
 
   @ApiPropertyOptional({ description: 'Card code/serial' })
   @IsOptional()
@@ -277,6 +293,34 @@ export class SubmitTradeDto {
   @IsString()
   @MaxLength(1000)
   userNotes?: string;
+}
+
+export class MakeOfferDto {
+  @ApiProperty({
+    description:
+      'Proposed payout for a LOST_DIGITS trade, in kobo (100 kobo = ₦1). Must be > 0.',
+    example: 500000,
+  })
+  @IsNumber()
+  @Min(1)
+  @Type(() => Number)
+  offerAmount: number;
+
+  @ApiPropertyOptional({
+    description: 'Optional admin note explaining the offer (e.g. why this amount).',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  offerNote?: string;
+}
+
+export class RespondToOfferDto {
+  @ApiProperty({
+    description: 'true to accept the offer (wallet credited), false to reject (trade cancelled).',
+  })
+  @IsBoolean()
+  accept: boolean;
 }
 
 export class ReviewTradeDto {
@@ -308,6 +352,11 @@ export class TradeQueryDto extends PaginationDto {
   @IsOptional()
   @IsEnum(TradeStatus)
   status?: TradeStatus;
+
+  @ApiPropertyOptional({ description: 'Filter by trade type', enum: TradeType })
+  @IsOptional()
+  @IsEnum(TradeType)
+  tradeType?: TradeType;
 
   @ApiPropertyOptional({ description: 'Filter by brand ID' })
   @IsOptional()

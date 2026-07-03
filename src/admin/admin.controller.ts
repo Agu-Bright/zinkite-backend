@@ -60,6 +60,7 @@ import {
   RateQueryDto,
   ReviewTradeDto,
   TradeQueryDto,
+  MakeOfferDto,
 } from "../giftcards/dto";
 import { TransactionsQueryDto } from "../wallet/dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
@@ -343,6 +344,23 @@ export class AdminController {
     @Body() dto: ReviewTradeDto,
   ) {
     return this.adminService.reviewTrade(id, admin.sub, dto);
+  }
+
+  @Patch("giftcards/trades/:id/offer")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Make an offer on a LOST_DIGITS trade (admin proposes payout)",
+  })
+  @ApiParam({ name: "id", description: "Trade ID" })
+  @ApiResponse({ status: 200, description: "Offer sent to user" })
+  @ApiResponse({ status: 400, description: "Trade is not eligible for an offer" })
+  @ApiResponse({ status: 404, description: "Trade not found" })
+  async makeOffer(
+    @Param("id") id: string,
+    @CurrentUser() admin: JwtPayload,
+    @Body() dto: MakeOfferDto,
+  ) {
+    return this.adminService.makeOffer(id, admin.sub, dto);
   }
 
   // ============================================

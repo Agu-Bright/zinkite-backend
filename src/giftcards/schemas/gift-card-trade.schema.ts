@@ -11,10 +11,15 @@ export type GiftCardTradeDocument = GiftCardTrade & Document;
 
 export enum TradeStatus {
   PENDING = 'PENDING',      // Awaiting admin review
-  PROCESSING = 'PROCESSING', // Being reviewed by admin
+  PROCESSING = 'PROCESSING', // Being reviewed by admin (or, for LOST_DIGITS, awaiting user response to offer)
   APPROVED = 'APPROVED',    // Approved and wallet credited
   REJECTED = 'REJECTED',    // Rejected by admin
-  CANCELLED = 'CANCELLED',  // Cancelled by user
+  CANCELLED = 'CANCELLED',  // Cancelled by user (or user rejected admin offer for LOST_DIGITS)
+}
+
+export enum TradeType {
+  STANDARD = 'STANDARD',       // Regular trade: user knows card value, backend applies rate
+  LOST_DIGITS = 'LOST_DIGITS', // Card has missing/hidden digits: admin proposes an offer, user accepts/rejects
 }
 
 @Schema({
@@ -42,29 +47,53 @@ export class GiftCardTrade {
   @Prop({ type: Types.ObjectId, ref: 'GiftCardCategory', required: true })
   categoryId: Types.ObjectId;
 
-  @ApiProperty({ description: 'Reference to rate applied' })
-  @Prop({ type: Types.ObjectId, ref: 'GiftCardRate', required: true })
-  rateId: Types.ObjectId;
+  @ApiProperty({ description: 'Reference to rate applied (nullable for LOST_DIGITS trades — no rate at submit time)' })
+  @Prop({ type: Types.ObjectId, ref: 'GiftCardRate', default: null })
+  rateId: Types.ObjectId | null;
 
   @ApiProperty({ description: 'Unique trade reference', example: 'GC-ABC12345' })
   @Prop({ type: String, required: true, unique: true })
   reference: string;
 
-  @ApiProperty({ description: 'Card value in the category currency', example: 50 })
-  @Prop({ type: Number, required: true, min: 0 })
+  @ApiProperty({ description: 'Trade type — STANDARD or LOST_DIGITS', enum: TradeType })
+  @Prop({ type: String, enum: TradeType, default: TradeType.STANDARD })
+  tradeType: TradeType;
+
+  @ApiProperty({ description: 'Card value in the category currency (0 for LOST_DIGITS until offer is made)', example: 50 })
+  @Prop({ type: Number, default: 0, min: 0 })
   cardValueUsd: number;
 
   @ApiProperty({ description: 'Snapshotted currency at trade time', enum: CategoryCurrency })
   @Prop({ type: String, enum: CategoryCurrency, default: CategoryCurrency.USD })
   currency: CategoryCurrency;
 
-  @ApiProperty({ description: 'Exchange rate applied (NGN per 1 unit of currency)', example: 450 })
-  @Prop({ type: Number, required: true, min: 0 })
+  @ApiProperty({ description: 'Exchange rate applied (NGN per 1 unit of currency; 0 for LOST_DIGITS)', example: 450 })
+  @Prop({ type: Number, default: 0, min: 0 })
   rateApplied: number;
 
-  @ApiProperty({ description: 'Amount to credit in NGN (kobo)', example: 2250000 })
-  @Prop({ type: Number, required: true, min: 0 })
+  @ApiProperty({ description: 'Amount to credit in NGN (kobo). 0 until admin offer is accepted for LOST_DIGITS.', example: 2250000 })
+  @Prop({ type: Number, default: 0, min: 0 })
   amountNgn: number;
+
+  // ============================================
+  // LOST_DIGITS offer negotiation fields
+  // ============================================
+
+  @ApiProperty({ description: 'Admin-proposed payout in kobo (LOST_DIGITS only)', required: false })
+  @Prop({ type: Number, default: null, min: 0 })
+  offerAmount: number | null;
+
+  @ApiProperty({ description: 'Admin note attached to the offer', required: false })
+  @Prop({ type: String, default: null })
+  offerNote: string | null;
+
+  @ApiProperty({ description: 'When the admin made the offer', required: false })
+  @Prop({ type: Date, default: null })
+  offerMadeAt: Date | null;
+
+  @ApiProperty({ description: 'When the user accepted or rejected the offer', required: false })
+  @Prop({ type: Date, default: null })
+  offerRespondedAt: Date | null;
 
   @ApiProperty({ description: 'Card code/serial (encrypted)', required: false })
   @Prop({ type: String, default: null })
@@ -122,6 +151,7 @@ export const GiftCardTradeSchema = SchemaFactory.createForClass(GiftCardTrade);
 // Indexes for efficient queries
 GiftCardTradeSchema.index({ userId: 1, createdAt: -1 });
 GiftCardTradeSchema.index({ status: 1, createdAt: -1 });
+GiftCardTradeSchema.index({ tradeType: 1, status: 1, createdAt: -1 });
 GiftCardTradeSchema.index({ reference: 1 }, { unique: true });
 GiftCardTradeSchema.index({ brandId: 1 });
 GiftCardTradeSchema.index({ categoryId: 1 });

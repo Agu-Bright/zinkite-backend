@@ -66,7 +66,7 @@ import {
   toNaira,
 } from "../common/utils/helpers";
 import { PaginatedResult } from "../common/dto/pagination.dto";
-import { ReviewTradeDto, TradeQueryDto } from "../giftcards/dto";
+import { ReviewTradeDto, TradeQueryDto, MakeOfferDto } from "../giftcards/dto";
 import { NotificationsService } from "../notifications/notifications.service";
 
 @Injectable()
@@ -603,6 +603,39 @@ export class AdminService {
         'TRADE' as any,
         isApproved ? 'trade_approved' : 'trade_rejected',
       ).catch((err) => this.logger.error('Failed to send trade notification:', err.message));
+    }
+
+    return result;
+  }
+
+  /**
+   * Admin proposes a payout on a LOST_DIGITS trade. Delegates to
+   * GiftCardsService.makeOffer and fires a push so the user opens the app.
+   */
+  async makeOffer(
+    tradeId: string,
+    adminId: string,
+    dto: MakeOfferDto,
+  ): Promise<GiftCardTrade> {
+    const result = await this.giftCardsService.makeOffer(tradeId, adminId, dto);
+
+    const userId = result.userId?.toString();
+    if (userId) {
+      const amountNaira = (dto.offerAmount / 100).toLocaleString('en-NG', {
+        maximumFractionDigits: 2,
+      });
+      this.notificationsService
+        .sendToUser(
+          userId,
+          'Offer received',
+          `We have an offer of ₦${amountNaira} for your gift card. Open the app to accept or decline.`,
+          { type: 'trade_offer', tradeId },
+          'TRADE' as any,
+          'trade_offer',
+        )
+        .catch((err) =>
+          this.logger.error('Failed to send offer notification:', err.message),
+        );
     }
 
     return result;

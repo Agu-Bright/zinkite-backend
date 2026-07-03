@@ -31,6 +31,7 @@ import {
   GiftCardTrade,
   GiftCardTradeDocument,
   TradeStatus,
+  TradeType,
 } from './schemas/gift-card-trade.schema';
 import { WalletService } from '../wallet/wallet.service';
 import {
@@ -51,6 +52,8 @@ import {
   ReviewTradeDto,
   TradeQueryDto,
   CalculatedRateResponse,
+  MakeOfferDto,
+  RespondToOfferDto,
 } from './dto';
 import { generateReference, paginate, calculateSkip, toKobo, toNaira } from '../common/utils/helpers';
 import { PaginatedResult } from '../common/dto/pagination.dto';
@@ -531,22 +534,64 @@ export class GiftCardsService implements OnModuleInit {
   // ============================================
 
   /**
-   * Submit a new trade (user action)
+   * Submit a new trade (user action).
+   *
+   * Two flows:
+   * - STANDARD (default): admin has already set a rate. Backend looks up the
+   *   applicable rate, computes NGN payout upfront, and stores it. On admin
+   *   approval the wallet is credited immediately.
+   * - LOST_DIGITS: card has missing/hidden digits so there is no reliable
+   *   value. Backend saves the trade with rateId=null and amountNgn=0, then
+   *   waits for the admin to propose an offer via makeOffer(). The user then
+   *   accepts or rejects via respondToOffer().
    */
   async submitTrade(userId: string, dto: SubmitTradeDto): Promise<GiftCardTrade> {
-    // Get the applicable rate
-    const rateInfo = await this.getApplicableRate(dto.categoryId, dto.cardValueUsd);
+    const tradeType = dto.tradeType ?? TradeType.STANDARD;
 
-    // Get category to find brandId
+    // Get category — needed for brandId + currency snapshot in both flows.
     const category = await this.categoryModel.findById(dto.categoryId);
     if (!category) {
       throw new NotFoundException('Category not found');
     }
 
-    // Generate unique reference
     const reference = generateReference('GC');
 
-    // Convert amount to kobo for storage
+    if (tradeType === TradeType.LOST_DIGITS) {
+      // No rate lookup, no value math. Amount will be set when the user
+      // accepts the admin's offer.
+      const trade = new this.tradeModel({
+        userId: new Types.ObjectId(userId),
+        brandId: category.brandId,
+        categoryId: new Types.ObjectId(dto.categoryId),
+        rateId: null,
+        reference,
+        tradeType,
+        currency: category.currency,
+        cardValueUsd: 0,
+        rateApplied: 0,
+        amountNgn: 0,
+        cardCode: dto.cardCode || null,
+        cardPin: dto.cardPin || null,
+        proofImages: dto.proofImages,
+        userNotes: dto.userNotes || null,
+        status: TradeStatus.PENDING,
+      });
+
+      const savedTrade = await trade.save();
+      this.logger.log(
+        `Lost-digits trade submitted: ${reference} | User: ${userId} — awaiting admin offer`,
+      );
+      return savedTrade;
+    }
+
+    // STANDARD flow — value must be provided; backend applies rate.
+    if (!dto.cardValueUsd || dto.cardValueUsd <= 0) {
+      throw new BadRequestException(
+        'cardValueUsd is required for STANDARD trades',
+      );
+    }
+
+    const rateInfo = await this.getApplicableRate(dto.categoryId, dto.cardValueUsd);
     const amountNgnKobo = toKobo(rateInfo.amountNgn);
 
     const trade = new this.tradeModel({
@@ -555,6 +600,7 @@ export class GiftCardsService implements OnModuleInit {
       categoryId: new Types.ObjectId(dto.categoryId),
       rateId: new Types.ObjectId(rateInfo.rateId),
       reference,
+      tradeType: TradeType.STANDARD,
       cardValueUsd: dto.cardValueUsd,
       currency: category.currency,
       rateApplied: rateInfo.rate,
@@ -573,6 +619,165 @@ export class GiftCardsService implements OnModuleInit {
     );
 
     return savedTrade;
+  }
+
+  /**
+   * Admin proposes a payout for a LOST_DIGITS trade.
+   *
+   * Rules:
+   * - Trade must exist, be LOST_DIGITS, and be in PENDING status.
+   * - offerAmount is in kobo, must be > 0.
+   * - Sets offerAmount/Note/MadeAt, moves status to PROCESSING (awaiting user
+   *   response). The wallet is NOT credited yet — that happens when the user
+   *   accepts via respondToOffer().
+   * - One-shot: once an offer exists on a trade you cannot "re-offer"; you'd
+   *   need to reject and have the user resubmit. Update-in-place is allowed
+   *   only while the user hasn't responded.
+   */
+  async makeOffer(
+    tradeId: string,
+    adminId: string,
+    dto: MakeOfferDto,
+  ): Promise<GiftCardTrade> {
+    const trade = await this.tradeModel.findById(tradeId);
+
+    if (!trade) {
+      throw new NotFoundException('Trade not found');
+    }
+    if (trade.tradeType !== TradeType.LOST_DIGITS) {
+      throw new BadRequestException(
+        'Offers can only be made on LOST_DIGITS trades',
+      );
+    }
+    if (trade.offerRespondedAt) {
+      throw new BadRequestException(
+        'This trade has already been responded to by the user',
+      );
+    }
+    if (
+      trade.status !== TradeStatus.PENDING &&
+      trade.status !== TradeStatus.PROCESSING
+    ) {
+      throw new BadRequestException(
+        `Cannot make an offer on a ${trade.status} trade`,
+      );
+    }
+
+    trade.offerAmount = dto.offerAmount;
+    trade.offerNote = dto.offerNote || null;
+    trade.offerMadeAt = new Date();
+    trade.status = TradeStatus.PROCESSING;
+    trade.reviewedBy = new Types.ObjectId(adminId);
+
+    const saved = await trade.save();
+
+    this.logger.log(
+      `Offer made on trade ${saved.reference}: ₦${toNaira(dto.offerAmount)} by admin ${adminId}`,
+    );
+
+    // TODO: send push/email notification to user when notification infra is wired.
+
+    return saved;
+  }
+
+  /**
+   * User accepts or rejects the admin's LOST_DIGITS offer.
+   *
+   * - accept=true: credit the wallet with offerAmount, mark trade APPROVED,
+   *   populate amountNgn from offerAmount so downstream queries treat this
+   *   trade like any settled trade.
+   * - accept=false: mark trade CANCELLED. Nothing is credited.
+   *
+   * Runs inside a transaction so the wallet credit and trade update commit or
+   * roll back together — mirrors the reviewTrade approval path.
+   */
+  async respondToOffer(
+    tradeId: string,
+    userId: string,
+    dto: RespondToOfferDto,
+  ): Promise<GiftCardTrade> {
+    const session = await this.connection.startSession();
+    session.startTransaction();
+
+    try {
+      const trade = await this.tradeModel
+        .findOne({
+          _id: tradeId,
+          userId: new Types.ObjectId(userId),
+        })
+        .session(session);
+
+      if (!trade) {
+        throw new NotFoundException('Trade not found');
+      }
+      if (trade.tradeType !== TradeType.LOST_DIGITS) {
+        throw new BadRequestException(
+          'Only LOST_DIGITS trades have offers to respond to',
+        );
+      }
+      if (!trade.offerAmount || !trade.offerMadeAt) {
+        throw new BadRequestException(
+          'No offer has been made on this trade yet',
+        );
+      }
+      if (trade.offerRespondedAt) {
+        throw new BadRequestException('This offer has already been responded to');
+      }
+
+      trade.offerRespondedAt = new Date();
+
+      if (dto.accept) {
+        trade.amountNgn = trade.offerAmount;
+        trade.status = TradeStatus.APPROVED;
+
+        const walletTransaction = await this.walletService.creditWallet({
+          userId: trade.userId.toString(),
+          amount: trade.offerAmount,
+          category: TransactionCategory.GIFTCARD,
+          source: TransactionSource.GIFTCARD_TRADE,
+          reference: trade.reference,
+          narration: `Gift card trade (lost digits) accepted: ${trade.reference}`,
+          meta: {
+            tradeId: trade._id,
+            brandId: trade.brandId,
+            categoryId: trade.categoryId,
+            tradeType: TradeType.LOST_DIGITS,
+            offerAmount: trade.offerAmount,
+          },
+          session,
+        });
+
+        trade.walletTransactionId = (walletTransaction as any)._id;
+
+        this.logger.log(
+          `Lost-digits offer accepted: ${trade.reference} | Credited: NGN ${toNaira(trade.offerAmount)}`,
+        );
+      } else {
+        trade.status = TradeStatus.CANCELLED;
+        this.logger.log(
+          `Lost-digits offer rejected by user: ${trade.reference}`,
+        );
+      }
+
+      await trade.save({ session });
+      await session.commitTransaction();
+
+      const populated = await this.tradeModel
+        .findById(trade._id)
+        .populate('brandId', 'name slug logoUrl')
+        .populate('categoryId', 'name slug cardType');
+
+      return populated || trade;
+    } catch (error) {
+      await session.abortTransaction();
+      this.logger.error(
+        `Lost-digits offer response failed: ${error.message}`,
+        error.stack,
+      );
+      throw error;
+    } finally {
+      session.endSession();
+    }
   }
 
   /**
@@ -618,6 +823,10 @@ export class GiftCardsService implements OnModuleInit {
 
     if (query.status) {
       filter.status = query.status;
+    }
+
+    if (query.tradeType) {
+      filter.tradeType = query.tradeType;
     }
 
     if (query.brandId) {
