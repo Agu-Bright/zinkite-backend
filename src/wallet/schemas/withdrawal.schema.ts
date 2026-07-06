@@ -17,11 +17,12 @@ import { ApiProperty } from "@nestjs/swagger";
 export type WithdrawalDocument = Withdrawal & Document;
 
 export enum WithdrawalStatus {
-  PENDING = "PENDING",
-  PROCESSING = "PROCESSING",
-  SUCCESS = "SUCCESS",
-  FAILED = "FAILED",
-  REVERSED = "REVERSED",
+  PENDING = "PENDING",         // Awaiting admin approval — wallet NOT yet debited
+  PROCESSING = "PROCESSING",   // Legacy: automatic payout in flight (kept for old records + webhook path)
+  SUCCESS = "SUCCESS",         // Admin approved (manual flow) OR provider webhook confirmed
+  FAILED = "FAILED",           // Provider failed (auto-refund happens via webhook)
+  REVERSED = "REVERSED",       // Provider reversal (auto-refund via webhook)
+  REJECTED = "REJECTED",       // Admin rejected the pending request — no wallet touch
 }
 
 @Schema({

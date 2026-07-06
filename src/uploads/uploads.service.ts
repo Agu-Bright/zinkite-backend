@@ -129,6 +129,13 @@ export class UploadsService {
   }
 
   /**
+   * Upload a gift card category flag (country/region flag icon).
+   */
+  async uploadCategoryFlag(file: Express.Multer.File): Promise<UploadResult> {
+    return this.uploadFile(file, 'category-flags', 2);
+  }
+
+  /**
    * Upload a promo banner image.
    */
   async uploadPromoBanner(file: Express.Multer.File): Promise<UploadResult> {

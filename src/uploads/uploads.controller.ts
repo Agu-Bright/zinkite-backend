@@ -153,6 +153,37 @@ export class UploadsController {
   }
 
   /**
+   * Upload gift card category flag
+   */
+  @Post('category-flag')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Upload gift card category flag (country/region icon)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Flag image (jpeg, png, gif, webp, svg)',
+        },
+      },
+      required: ['file'],
+    },
+  })
+  @ApiResponse({ status: 201, description: 'Flag uploaded successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid file' })
+  async uploadCategoryFlag(
+    @UploadedFile() file: Express.Multer.File,
+  ): Promise<UploadResult> {
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
+    }
+    return this.uploadsService.uploadCategoryFlag(file);
+  }
+
+  /**
    * Upload promo banner image
    */
   @Post('promo-banner')
