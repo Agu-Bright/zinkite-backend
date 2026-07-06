@@ -253,7 +253,16 @@ export class GiftCardsService implements OnModuleInit {
       throw new BadRequestException('Minimum value must be less than maximum value');
     }
 
-    const category = new this.categoryModel(dto);
+    // Explicitly cast brandId to ObjectId. Mongoose *should* auto-cast the
+    // string DTO field based on the schema, but historically some categories
+    // in this DB have been persisted with a string-typed brandId (see the
+    // diagnose-brandid-link.js script), which then can't be filtered by the
+    // ObjectId-cast admin query. Casting here guarantees the stored BSON
+    // type is correct.
+    const category = new this.categoryModel({
+      ...dto,
+      brandId: new Types.ObjectId(dto.brandId),
+    });
     return category.save();
   }
 
@@ -264,7 +273,17 @@ export class GiftCardsService implements OnModuleInit {
     const filter: any = {};
 
     if (query.brandId) {
-      filter.brandId = new Types.ObjectId(query.brandId);
+      // Match both BSON types — some legacy categories were persisted with a
+      // string brandId instead of ObjectId (fixed on write path by createCategory,
+      // and normalised for existing rows by scripts/fix-string-brandids.js).
+      if (Types.ObjectId.isValid(query.brandId)) {
+        filter.$or = [
+          { brandId: new Types.ObjectId(query.brandId) },
+          { brandId: query.brandId },
+        ];
+      } else {
+        filter.brandId = query.brandId;
+      }
     }
 
     if (query.status) {
