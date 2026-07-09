@@ -169,6 +169,79 @@ export class GiftCardsService implements OnModuleInit {
   }
 
   /**
+   * Public: active brands + one representative rate per brand.
+   *
+   * Powers the home-screen brand list on mobile so it shows the rate next to
+   * each brand at a glance. Structure matches Cardviro's `/brands/with-rates`
+   * so the mobile code that reads `maxRate` works without a shape change.
+   *
+   * Implementation: three simple queries + an in-memory join. The collections
+   * are small (a few brands, tens of categories, tens of rates), so no
+   * aggregation pipeline is warranted — and JS-side joins are obviously
+   * correct in a way $lookup with nested pipelines historically hasn't been.
+   */
+  async getActiveBrandsWithBestRate(): Promise<
+    Array<{
+      id: string;
+      name: string;
+      slug: string;
+      logoUrl?: string;
+      isFeatured: boolean;
+      maxRate: number | null;
+      minRate: number | null;
+    }>
+  > {
+    const brands = await this.brandModel
+      .find({ status: BrandStatus.ACTIVE })
+      .sort({ sortOrder: 1, name: 1 })
+      .lean();
+
+    if (brands.length === 0) return [];
+
+    const categories = await this.categoryModel
+      .find({ status: CategoryStatus.ACTIVE })
+      .select('_id brandId')
+      .lean();
+
+    const rates = await this.rateModel
+      .find({ status: RateStatus.ACTIVE })
+      .select('categoryId rate')
+      .lean();
+
+    // categoryId → brandId
+    const catToBrand = new Map<string, string>();
+    for (const c of categories) {
+      catToBrand.set(String(c._id), String(c.brandId));
+    }
+
+    // brandId → first rate we encounter for any of its categories.
+    // The home-screen row just needs ONE rate per brand for display; the
+    // per-category picker fetches the exact per-category rate separately.
+    const rateByBrand = new Map<string, number>();
+    for (const r of rates) {
+      const brandId = catToBrand.get(String(r.categoryId));
+      if (!brandId) continue;
+      if (rateByBrand.has(brandId)) continue;
+      rateByBrand.set(brandId, r.rate);
+    }
+
+    return brands.map((b: any) => {
+      const rate = rateByBrand.get(String(b._id)) ?? null;
+      return {
+        id: String(b._id),
+        name: b.name,
+        slug: b.slug,
+        logoUrl: b.logoUrl,
+        isFeatured: !!b.isFeatured,
+        // Cardviro-compatible field names — same value in both since we're
+        // returning a single representative rate, not a range.
+        maxRate: rate,
+        minRate: rate,
+      };
+    });
+  }
+
+  /**
    * Get a single brand by ID
    */
   async getBrandById(id: string): Promise<GiftCardBrand> {

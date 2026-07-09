@@ -63,6 +63,20 @@ export class GiftCardsController {
     return this.giftCardsService.getActiveBrands();
   }
 
+  @Get('brands/with-rates')
+  @Public()
+  @ApiOperation({
+    summary: 'Get active brands with one representative active rate each',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'List of brands with a `maxRate` field (₦ per 1 unit of the category currency)',
+  })
+  async getBrandsWithRates() {
+    return this.giftCardsService.getActiveBrandsWithBestRate();
+  }
+
   @Get('brands/:id')
   @Public()
   @ApiOperation({ summary: 'Get a single brand by ID' })
