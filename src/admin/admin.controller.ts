@@ -444,9 +444,50 @@ export class AdminController {
     return this.adminService.getWithdrawals(query);
   }
 
+  @Post("withdrawals/:id/approve")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Approve a PENDING withdrawal — debits the user's wallet and marks the request SUCCESS",
+  })
+  @ApiParam({ name: "id", description: "Withdrawal ID" })
+  @ApiResponse({ status: 200, description: "Approved withdrawal" })
+  @ApiResponse({
+    status: 400,
+    description: "Withdrawal is not PENDING, or user balance dropped below the amount",
+  })
+  async approveWithdrawal(
+    @Param("id") id: string,
+    @Body() body: { note?: string },
+    @CurrentUser() admin: JwtPayload,
+  ) {
+    return this.adminService.approveWithdrawal(id, admin.sub, body?.note);
+  }
+
+  @Post("withdrawals/:id/reject")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Reject a PENDING withdrawal — no wallet touch. A note explaining why is required.",
+  })
+  @ApiParam({ name: "id", description: "Withdrawal ID" })
+  @ApiResponse({ status: 200, description: "Rejected withdrawal" })
+  @ApiResponse({ status: 400, description: "Withdrawal is not PENDING, or note missing" })
+  async rejectWithdrawal(
+    @Param("id") id: string,
+    @Body() body: { note: string },
+    @CurrentUser() admin: JwtPayload,
+  ) {
+    return this.adminService.rejectWithdrawal(id, admin.sub, body?.note);
+  }
+
+  /**
+   * @deprecated Kept so the mobile app / older admin builds don't 500 while
+   * the frontend is rolling out approve/reject. Delegates internally.
+   */
   @Patch("withdrawals/:id/status")
   @ApiOperation({
-    summary: "Mark a manual withdrawal as paid or failed (admin action)",
+    summary: "[Deprecated] Delegates to approve/reject. Use those instead.",
   })
   @ApiParam({ name: "id", description: "Withdrawal ID" })
   @ApiResponse({ status: 200, description: "Updated withdrawal" })

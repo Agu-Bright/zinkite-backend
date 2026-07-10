@@ -250,28 +250,27 @@ export class WithdrawalService {
   }
 
   // ═══════════════════════════════════════════════════
-  //  INITIATE WITHDRAWAL  (fully automatic)
+  //  INITIATE WITHDRAWAL (admin-approved flow — no debit yet)
   // ═══════════════════════════════════════════════════
 
   /**
-   * Initiate a withdrawal — money is sent automatically via Paystack.
+   * Create a PENDING withdrawal request awaiting admin approval.
    *
-   * Atomic flow inside a Mongo session:
-   *  1. Debit wallet
-   *  2. Create wallet transaction (DEBIT / SUCCESS)
-   *  3. Create withdrawal record (PENDING)
-   *  — commit —
-   *  4. Call Paystack POST /transfer
-   *  5. Update withdrawal with transfer code
+   * Deferred-debit flow (replaces the older debit-on-submit behavior):
+   *  1. Validate that a bank account is saved.
+   *  2. Compute the user's existing pending-withdrawal sum and guard against
+   *     over-request: `wallet.balance >= pendingSum + newAmount`. The wallet
+   *     itself is NOT touched here — this is a race-protection check only,
+   *     not a hard reservation. Two concurrent submits are still caught at
+   *     approval time by the atomic `$gte: amount` update.
+   *  3. Persist the withdrawal in PENDING and notify admins.
    *
-   * If Paystack call fails immediately we refund in a separate session.
-   * If Paystack accepts the transfer, the final outcome is determined
-   * by the webhook (transfer.success / transfer.failed / transfer.reversed).
+   * The wallet is debited when the admin clicks Approve — see
+   * `approveWithdrawal` below.
    */
   async initiateWithdrawal(userId: string, dto: InitiateWithdrawalDto) {
     this.logger.log(`Withdrawal request: user=${userId} amount=₦${dto.amount}`);
 
-    // ── Pre-checks ──
     const bankAccount = await this.bankAccountModel.findOne({
       userId: new Types.ObjectId(userId),
     });
@@ -281,88 +280,49 @@ export class WithdrawalService {
 
     const amountKobo = Math.round(dto.amount * 100);
 
-    const wallet = await this.walletModel.findOne({ userId: new Types.ObjectId(userId) });
+    const wallet = await this.walletModel.findOne({
+      userId: new Types.ObjectId(userId),
+    });
     if (!wallet) throw new NotFoundException('Wallet not found');
-    if (wallet.balance < amountKobo) {
+
+    // Sum of this user's still-pending withdrawals. Excludes anything already
+    // approved/rejected/failed — those either already debited or won't.
+    const pendingAgg = await this.withdrawalModel.aggregate([
+      {
+        $match: {
+          userId: new Types.ObjectId(userId),
+          status: WithdrawalStatus.PENDING,
+        },
+      },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    const pendingSum: number = pendingAgg[0]?.total ?? 0;
+    const available = wallet.balance - pendingSum;
+
+    if (available < amountKobo) {
       throw new BadRequestException(
-        `Insufficient balance. You have ₦${(wallet.balance / 100).toLocaleString()}`,
+        `Insufficient available balance. You have ₦${(available / 100).toLocaleString('en-NG')} available (₦${(pendingSum / 100).toLocaleString('en-NG')} already pending).`,
       );
     }
 
     const reference = generateReference('WDR');
 
-    // ── Debit wallet + create records atomically ──
-    // The withdrawal lands in PROCESSING immediately; an admin reviews it in
-    // the dashboard, sends the money out-of-band, and marks it SUCCESS (or
-    // FAILED → wallet auto-refunds).
-    const session = await this.connection.startSession();
-    session.startTransaction();
+    // Persist a PENDING request. No wallet debit, no wallet transaction —
+    // both happen in approveWithdrawal() when the admin clicks Approve.
+    const withdrawal = await this.withdrawalModel.create({
+      userId: new Types.ObjectId(userId),
+      walletId: wallet._id,
+      amount: amountKobo,
+      currency: 'NGN',
+      reference,
+      status: WithdrawalStatus.PENDING,
+      bankName: bankAccount.bankName,
+      bankCode: bankAccount.bankCode,
+      accountNumber: bankAccount.accountNumber,
+      accountName: bankAccount.accountName,
+    });
 
-    let withdrawal: WithdrawalDocument;
-    try {
-      const updatedWallet = await this.walletModel.findOneAndUpdate(
-        { _id: wallet._id, balance: { $gte: amountKobo } },
-        { $inc: { balance: -amountKobo } },
-        { new: true, session },
-      );
-      if (!updatedWallet) throw new BadRequestException('Insufficient balance');
-
-      await this.walletTxnModel.create(
-        [
-          {
-            userId: new Types.ObjectId(userId),
-            walletId: wallet._id,
-            type: TransactionType.DEBIT,
-            category: TransactionCategory.MANUAL,
-            source: TransactionSource.MANUAL_ADJUSTMENT,
-            amount: amountKobo,
-            currency: 'NGN',
-            reference,
-            status: TransactionStatus.SUCCESS,
-            balanceBefore: wallet.balance,
-            balanceAfter: wallet.balance - amountKobo,
-            narration: `Withdrawal to ${bankAccount.bankName} - ${bankAccount.accountNumber}`,
-            meta: {
-              withdrawalType: 'MANUAL_PAYOUT',
-              bankName: bankAccount.bankName,
-              accountNumber: bankAccount.accountNumber,
-              accountName: bankAccount.accountName,
-            },
-          },
-        ],
-        { session },
-      );
-
-      [withdrawal] = await this.withdrawalModel.create(
-        [
-          {
-            userId: new Types.ObjectId(userId),
-            walletId: wallet._id,
-            amount: amountKobo,
-            currency: 'NGN',
-            reference,
-            // Land in PROCESSING immediately — the user sees "your transfer is
-            // being sent" UX while an admin actions it.
-            status: WithdrawalStatus.PROCESSING,
-            bankName: bankAccount.bankName,
-            bankCode: bankAccount.bankCode,
-            accountNumber: bankAccount.accountNumber,
-            accountName: bankAccount.accountName,
-            walletTransactionReference: reference,
-          },
-        ],
-        { session },
-      );
-
-      await session.commitTransaction();
-    } catch (err) {
-      await session.abortTransaction();
-      throw err;
-    } finally {
-      session.endSession();
-    }
-
-    // ── Notify admins (best-effort, outside the transaction) ──
+    // Notify admins (best-effort — never blocks the response).
     this.notifyAdminsOfWithdrawal(withdrawal, userId).catch((err) =>
       this.logger.error(`Failed to send admin withdrawal alert: ${err.message}`),
     );
@@ -437,45 +397,99 @@ export class WithdrawalService {
   }
 
   /**
-   * Admin marks a PROCESSING withdrawal as SUCCESS (money already sent out of
-   * band) or FAILED (refund the wallet). Audit fields populated.
+   * Approve a PENDING withdrawal — debits the user's wallet in one step and
+   * marks the withdrawal SUCCESS. The admin is expected to have sent the
+   * money out-of-band (via their own bank app) BEFORE clicking Approve.
+   *
+   * Everything happens inside a Mongo session so the debit + audit
+   * transaction + withdrawal update either all commit or all roll back.
+   * The `$gte: amount` guard in the wallet update is what prevents an
+   * over-debit if concurrent requests race past the submit-time check.
    */
-  async markWithdrawal(
+  async approveWithdrawal(
     withdrawalId: string,
     adminUserId: string,
-    status: WithdrawalStatus.SUCCESS | WithdrawalStatus.FAILED,
     note?: string,
   ): Promise<WithdrawalDocument> {
     const withdrawal = await this.withdrawalModel.findById(withdrawalId);
     if (!withdrawal) throw new NotFoundException('Withdrawal not found');
-
-    if (
-      [
-        WithdrawalStatus.SUCCESS,
-        WithdrawalStatus.FAILED,
-        WithdrawalStatus.REVERSED,
-      ].includes(withdrawal.status)
-    ) {
+    if (withdrawal.status !== WithdrawalStatus.PENDING) {
       throw new BadRequestException(
-        `Withdrawal is already ${withdrawal.status} — cannot change status`,
+        `Withdrawal is ${withdrawal.status} — only PENDING requests can be approved`,
       );
     }
 
-    withdrawal.status = status;
-    withdrawal.processedBy = new Types.ObjectId(adminUserId);
-    withdrawal.processedAt = new Date();
-    if (note) withdrawal.adminNote = note;
+    const amountKobo = withdrawal.amount;
+    const wallet = await this.walletModel.findById(withdrawal.walletId);
+    if (!wallet) throw new NotFoundException('Wallet not found for this withdrawal');
 
-    if (status === WithdrawalStatus.SUCCESS) {
-      withdrawal.completedAt = new Date();
-      await withdrawal.save();
-      this.logger.log(
-        `Admin ${adminUserId} marked withdrawal ${withdrawal.reference} as SUCCESS`,
+    const session = await this.connection.startSession();
+    session.startTransaction();
+    try {
+      // Atomic debit — the `$gte` guarantees we don't go negative under a race.
+      const updatedWallet = await this.walletModel.findOneAndUpdate(
+        { _id: wallet._id, balance: { $gte: amountKobo } },
+        { $inc: { balance: -amountKobo }, $set: { lastTransactionAt: new Date() } },
+        { new: true, session },
+      );
+      if (!updatedWallet) {
+        throw new BadRequestException(
+          'User no longer has sufficient balance to cover this withdrawal',
+        );
+      }
+
+      await this.walletTxnModel.create(
+        [
+          {
+            userId: withdrawal.userId,
+            walletId: wallet._id,
+            type: TransactionType.DEBIT,
+            category: TransactionCategory.MANUAL,
+            source: TransactionSource.MANUAL_ADJUSTMENT,
+            amount: amountKobo,
+            currency: 'NGN',
+            reference: withdrawal.reference,
+            status: TransactionStatus.SUCCESS,
+            balanceBefore: wallet.balance,
+            balanceAfter: wallet.balance - amountKobo,
+            narration: `Withdrawal to ${withdrawal.bankName} - ${withdrawal.accountNumber}`,
+            meta: {
+              withdrawalType: 'MANUAL_PAYOUT',
+              withdrawalId: withdrawal._id,
+              bankName: withdrawal.bankName,
+              accountNumber: withdrawal.accountNumber,
+              accountName: withdrawal.accountName,
+              approvedBy: adminUserId,
+            },
+          },
+        ],
+        { session },
       );
 
-      // Notify user — push + email
-      const amountNaira = withdrawal.amount / 100;
-      this.notificationsService.sendToUser(
+      withdrawal.status = WithdrawalStatus.SUCCESS;
+      withdrawal.processedBy = new Types.ObjectId(adminUserId);
+      withdrawal.processedAt = new Date();
+      withdrawal.completedAt = new Date();
+      withdrawal.walletTransactionReference = withdrawal.reference;
+      if (note) withdrawal.adminNote = note;
+      await withdrawal.save({ session });
+
+      await session.commitTransaction();
+    } catch (err) {
+      await session.abortTransaction();
+      throw err;
+    } finally {
+      session.endSession();
+    }
+
+    this.logger.log(
+      `Admin ${adminUserId} approved withdrawal ${withdrawal.reference} — wallet debited ₦${(amountKobo / 100).toLocaleString('en-NG')}`,
+    );
+
+    // Notify the user (push + email, best-effort)
+    const amountNaira = amountKobo / 100;
+    this.notificationsService
+      .sendToUser(
         withdrawal.userId.toString(),
         'Withdrawal Sent',
         `Your withdrawal of ₦${amountNaira.toLocaleString('en-NG')} has been sent to your bank account.`,
@@ -486,56 +500,94 @@ export class WithdrawalService {
         },
         'TRANSACTION' as any,
         'withdrawal_update',
-      ).catch((err) =>
-        this.logger.error(`Withdrawal notification error: ${err.message}`),
+      )
+      .catch((err) => this.logger.error(`Notification error: ${err.message}`));
+    this.userModel
+      .findById(withdrawal.userId)
+      .select('email')
+      .lean()
+      .then((user) => {
+        if (user?.email) {
+          this.emailService
+            .sendWithdrawalCompleted(
+              user.email,
+              amountNaira,
+              withdrawal.bankName,
+              withdrawal.accountNumber,
+              withdrawal.reference,
+            )
+            .catch((err) => this.logger.error(`Email send failed: ${err.message}`));
+        }
+      });
+
+    return withdrawal;
+  }
+
+  /**
+   * Reject a PENDING withdrawal — no wallet debit, request marked REJECTED.
+   * Requires a note so the user gets a real explanation.
+   */
+  async rejectWithdrawal(
+    withdrawalId: string,
+    adminUserId: string,
+    note: string,
+  ): Promise<WithdrawalDocument> {
+    if (!note || !note.trim()) {
+      throw new BadRequestException('A rejection note is required');
+    }
+    const withdrawal = await this.withdrawalModel.findById(withdrawalId);
+    if (!withdrawal) throw new NotFoundException('Withdrawal not found');
+    if (withdrawal.status !== WithdrawalStatus.PENDING) {
+      throw new BadRequestException(
+        `Withdrawal is ${withdrawal.status} — only PENDING requests can be rejected`,
       );
-      this.userModel
-        .findById(withdrawal.userId)
-        .select('email')
-        .lean()
-        .then((user) => {
-          if (user?.email) {
-            this.emailService
-              .sendWithdrawalCompleted(
-                user.email,
-                amountNaira,
-                withdrawal.bankName,
-                withdrawal.accountNumber,
-                withdrawal.reference,
-              )
-              .catch((err) =>
-                this.logger.error(`Email send failed: ${err.message}`),
-              );
-          }
-        });
-      return withdrawal;
     }
 
-    // FAILED → refund wallet
-    withdrawal.failureReason = note || 'Marked failed by admin';
+    withdrawal.status = WithdrawalStatus.REJECTED;
+    withdrawal.processedBy = new Types.ObjectId(adminUserId);
+    withdrawal.processedAt = new Date();
+    withdrawal.adminNote = note.trim();
+    withdrawal.failureReason = note.trim();
     await withdrawal.save();
-    await this.refundWallet(withdrawal);
+
     this.logger.log(
-      `Admin ${adminUserId} marked withdrawal ${withdrawal.reference} as FAILED — wallet refunded`,
+      `Admin ${adminUserId} rejected withdrawal ${withdrawal.reference}: ${note.trim()}`,
     );
 
     const amountNaira = withdrawal.amount / 100;
-    this.notificationsService.sendToUser(
-      withdrawal.userId.toString(),
-      'Withdrawal Failed',
-      `Your withdrawal of ₦${amountNaira.toLocaleString('en-NG')} failed and your wallet has been refunded.`,
-      {
-        type: 'withdrawal_update',
-        withdrawalId: withdrawal._id.toString(),
-        status: 'FAILED',
-      },
-      'TRANSACTION' as any,
-      'withdrawal_update',
-    ).catch((err) =>
-      this.logger.error(`Withdrawal notification error: ${err.message}`),
-    );
+    this.notificationsService
+      .sendToUser(
+        withdrawal.userId.toString(),
+        'Withdrawal Rejected',
+        `Your withdrawal of ₦${amountNaira.toLocaleString('en-NG')} was rejected. Reason: ${note.trim()}`,
+        {
+          type: 'withdrawal_update',
+          withdrawalId: withdrawal._id.toString(),
+          status: 'REJECTED',
+        },
+        'TRANSACTION' as any,
+        'withdrawal_update',
+      )
+      .catch((err) => this.logger.error(`Notification error: ${err.message}`));
 
     return withdrawal;
+  }
+
+  /**
+   * @deprecated Kept only so existing admin controllers that still call
+   * markWithdrawal don't 500. Delegates to approve/reject based on status.
+   * Remove once the admin controller is switched over.
+   */
+  async markWithdrawal(
+    withdrawalId: string,
+    adminUserId: string,
+    status: WithdrawalStatus.SUCCESS | WithdrawalStatus.FAILED,
+    note?: string,
+  ): Promise<WithdrawalDocument> {
+    if (status === WithdrawalStatus.SUCCESS) {
+      return this.approveWithdrawal(withdrawalId, adminUserId, note);
+    }
+    return this.rejectWithdrawal(withdrawalId, adminUserId, note || 'Marked failed by admin');
   }
 
   // ═══════════════════════════════════════════════════

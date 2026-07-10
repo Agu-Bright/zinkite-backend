@@ -36,6 +36,7 @@ import {
   KorapayTransactionSchema,
 } from '../korapay/schemas/korapay-transaction.schema';
 import { Withdrawal, WithdrawalSchema } from '../wallet/schemas/withdrawal.schema';
+import { BankAccount, BankAccountSchema } from '../wallet/schemas/bank-account.schema';
 
 // RBAC controllers & services
 import { AdminAuthController } from './admin-auth.controller';
@@ -74,6 +75,7 @@ import { GiftCardShopCode, GiftCardShopCodeSchema } from '../giftcard-shop/schem
       { name: PaystackTransaction.name, schema: PaystackTransactionSchema },
       { name: KorapayTransaction.name, schema: KorapayTransactionSchema },
       { name: Withdrawal.name, schema: WithdrawalSchema },
+      { name: BankAccount.name, schema: BankAccountSchema },
       { name: AdminRole.name, schema: AdminRoleSchema },
       { name: AdminUser.name, schema: AdminUserSchema },
       { name: WalletCreditRequest.name, schema: WalletCreditRequestSchema },

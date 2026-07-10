@@ -32,6 +32,7 @@ import {
   KorapayTransactionDocument,
 } from "../korapay/schemas/korapay-transaction.schema";
 import { Withdrawal, WithdrawalDocument } from "../wallet/schemas/withdrawal.schema";
+import { BankAccount, BankAccountDocument } from "../wallet/schemas/bank-account.schema";
 import {
   WalletCreditRequest,
   WalletCreditRequestDocument,
@@ -88,6 +89,8 @@ export class AdminService {
     private readonly korapayModel: Model<KorapayTransactionDocument>,
     @InjectModel(Withdrawal.name)
     private readonly withdrawalModel: Model<WithdrawalDocument>,
+    @InjectModel(BankAccount.name)
+    private readonly bankAccountModel: Model<BankAccountDocument>,
     @InjectModel(WalletCreditRequest.name)
     private readonly creditRequestModel: Model<WalletCreditRequestDocument>,
     @InjectModel(NotificationLog.name)
@@ -102,9 +105,41 @@ export class AdminService {
   ) {}
 
   /**
-   * Admin marks a manual withdrawal as paid or failed.
-   * Delegates to WithdrawalService so refund-on-fail + notifications stay
-   * in one place.
+   * Approve a PENDING withdrawal — thin delegate so the notification/wallet
+   * atomicity stays in WithdrawalService.
+   */
+  async approveWithdrawal(
+    withdrawalId: string,
+    adminUserId: string,
+    note?: string,
+  ) {
+    const w = await this.withdrawalService.approveWithdrawal(
+      withdrawalId,
+      adminUserId,
+      note,
+    );
+    return w.toJSON();
+  }
+
+  /**
+   * Reject a PENDING withdrawal — note is required.
+   */
+  async rejectWithdrawal(
+    withdrawalId: string,
+    adminUserId: string,
+    note: string,
+  ) {
+    const w = await this.withdrawalService.rejectWithdrawal(
+      withdrawalId,
+      adminUserId,
+      note,
+    );
+    return w.toJSON();
+  }
+
+  /**
+   * @deprecated Kept for the older PATCH /withdrawals/:id/status route.
+   * New callers should use approveWithdrawal / rejectWithdrawal.
    */
   async markWithdrawal(
     withdrawalId: string,
@@ -319,6 +354,12 @@ export class AdminService {
       userId: new Types.ObjectId(userId),
     });
 
+    // Bank accounts — surface them here so the admin can look up
+    // where a user's withdrawal should go from a single detail view.
+    const bankAccounts = await this.bankAccountModel
+      .find({ userId: new Types.ObjectId(userId) })
+      .lean();
+
     return {
       user,
       wallet: wallet
@@ -328,6 +369,7 @@ export class AdminService {
             lastTransactionAt: wallet.lastTransactionAt,
           }
         : null,
+      bankAccounts,
       recentTransactions: recentTransactions.map((t) => ({
         ...t.toObject(),
         amountNaira: toNaira(t.amount),
