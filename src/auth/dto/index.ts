@@ -28,13 +28,13 @@ export class RegisterDto {
   @IsNotEmpty()
   email: string;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     example: '+2348012345678',
-    description: 'User phone number (international format)',
+    description: 'User phone number (international format) — optional at registration',
   })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  phone: string;
+  phone?: string;
 
   @ApiProperty({
     example: 'SecureP@ss123',
