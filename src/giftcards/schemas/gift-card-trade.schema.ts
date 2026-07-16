@@ -107,6 +107,14 @@ export class GiftCardTrade {
   @Prop({ type: [String], default: [] })
   proofImages: string[];
 
+  @ApiProperty({
+    description:
+      'URL of the purchase receipt image (required for LOST_DIGITS trades). Helps verify card origin when the code is unreadable.',
+    required: false,
+  })
+  @Prop({ type: String, default: null })
+  receiptImageUrl: string | null;
+
   @ApiProperty({ description: 'Trade status', enum: TradeStatus })
   @Prop({ type: String, enum: TradeStatus, default: TradeStatus.PENDING })
   status: TradeStatus;

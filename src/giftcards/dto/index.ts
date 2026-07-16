@@ -288,6 +288,14 @@ export class SubmitTradeDto {
   @IsUrl({}, { each: true })
   proofImages: string[];
 
+  @ApiPropertyOptional({
+    description:
+      'Purchase receipt image URL — required for LOST_DIGITS trades so admin can verify card origin when the code is unreadable.',
+  })
+  @IsOptional()
+  @IsUrl()
+  receiptImageUrl?: string;
+
   @ApiPropertyOptional({ description: 'User notes/comments' })
   @IsOptional()
   @IsString()

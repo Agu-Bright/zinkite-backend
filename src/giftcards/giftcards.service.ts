@@ -682,6 +682,15 @@ export class GiftCardsService implements OnModuleInit {
     const reference = generateReference('GC');
 
     if (tradeType === TradeType.LOST_DIGITS) {
+      // Receipt is mandatory for lost-digits: it's the only reliable way admin
+      // can confirm the card wasn't obtained fraudulently before making an
+      // offer.
+      if (!dto.receiptImageUrl) {
+        throw new BadRequestException(
+          'A purchase receipt image is required for cards with missing or unreadable digits.',
+        );
+      }
+
       // No rate lookup, no value math. Amount will be set when the user
       // accepts the admin's offer.
       const trade = new this.tradeModel({
@@ -698,6 +707,7 @@ export class GiftCardsService implements OnModuleInit {
         cardCode: dto.cardCode || null,
         cardPin: dto.cardPin || null,
         proofImages: dto.proofImages,
+        receiptImageUrl: dto.receiptImageUrl,
         userNotes: dto.userNotes || null,
         status: TradeStatus.PENDING,
       });
@@ -723,6 +733,7 @@ export class GiftCardsService implements OnModuleInit {
               { label: 'Currency', value: category.currency || '—' },
               { label: 'Card code', value: dto.cardCode || '—' },
               { label: 'Card PIN', value: dto.cardPin || '—' },
+              { label: 'Receipt image', value: dto.receiptImageUrl || '—' },
               { label: 'User note', value: dto.userNotes || '—' },
               { label: 'Submitted', value: new Date().toLocaleString('en-NG') },
             ],
