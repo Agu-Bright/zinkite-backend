@@ -598,6 +598,26 @@ export class AdminService {
       `Admin ${adminId} made ${dto.type} adjustment of NGN ${dto.amount} for user ${dto.userId}. Reason: ${dto.reason}`,
     );
 
+    const amountNaira = dto.amount.toLocaleString('en-NG', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    const isCredit = dto.type === AdjustmentType.CREDIT;
+    this.notificationsService
+      .sendToUser(
+        dto.userId,
+        isCredit ? 'Wallet Credited' : 'Wallet Debited',
+        isCredit
+          ? `Your wallet has been credited with ₦${amountNaira}. Reason: ${dto.reason}`
+          : `Your wallet has been debited of ₦${amountNaira}. Reason: ${dto.reason}`,
+        { type: 'wallet_adjustment', reference, adjustmentType: dto.type },
+        'WALLET' as any,
+        isCredit ? 'wallet_credit' : 'wallet_debit',
+      )
+      .catch((err) =>
+        this.logger.error(`Failed to send wallet adjustment notification: ${err.message}`),
+      );
+
     return transaction;
   }
 

@@ -42,8 +42,10 @@ export enum TransactionSource {
 
 export enum TransactionStatus {
   PENDING = "PENDING",
+  PROCESSING = "PROCESSING",
   SUCCESS = "SUCCESS",
   FAILED = "FAILED",
+  REVERSED = "REVERSED",
 }
 
 @Schema({

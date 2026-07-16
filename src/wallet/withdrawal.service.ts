@@ -250,23 +250,25 @@ export class WithdrawalService {
   }
 
   // ═══════════════════════════════════════════════════
-  //  INITIATE WITHDRAWAL (admin-approved flow — no debit yet)
+  //  INITIATE WITHDRAWAL (debit-on-submit, admin-confirmed)
   // ═══════════════════════════════════════════════════
 
   /**
-   * Create a PENDING withdrawal request awaiting admin approval.
+   * Create a PROCESSING withdrawal — wallet is debited immediately.
    *
-   * Deferred-debit flow (replaces the older debit-on-submit behavior):
+   * Flow:
    *  1. Validate that a bank account is saved.
-   *  2. Compute the user's existing pending-withdrawal sum and guard against
-   *     over-request: `wallet.balance >= pendingSum + newAmount`. The wallet
-   *     itself is NOT touched here — this is a race-protection check only,
-   *     not a hard reservation. Two concurrent submits are still caught at
-   *     approval time by the atomic `$gte: amount` update.
-   *  3. Persist the withdrawal in PENDING and notify admins.
+   *  2. Atomic wallet debit with `$gte: amountKobo` guard (race-safe — if the
+   *     balance is not enough, nothing changes and we throw).
+   *  3. Persist a PROCESSING WalletTransaction so the user's transaction
+   *     history shows the debit with an in-progress status.
+   *  4. Persist the withdrawal record with status = PROCESSING.
+   *  5. Notify admins so someone can send the money and click Approve.
    *
-   * The wallet is debited when the admin clicks Approve — see
-   * `approveWithdrawal` below.
+   * On admin approval the WalletTransaction flips to SUCCESS. On rejection
+   * the wallet is refunded and the WalletTransaction is marked REVERSED.
+   * All three operations run in a Mongo session so they commit or roll back
+   * together.
    */
   async initiateWithdrawal(userId: string, dto: InitiateWithdrawalDto) {
     this.logger.log(`Withdrawal request: user=${userId} amount=₦${dto.amount}`);
@@ -279,55 +281,100 @@ export class WithdrawalService {
     }
 
     const amountKobo = Math.round(dto.amount * 100);
-
-    const wallet = await this.walletModel.findOne({
-      userId: new Types.ObjectId(userId),
-    });
-    if (!wallet) throw new NotFoundException('Wallet not found');
-
-    // Sum of this user's still-pending withdrawals. Excludes anything already
-    // approved/rejected/failed — those either already debited or won't.
-    const pendingAgg = await this.withdrawalModel.aggregate([
-      {
-        $match: {
-          userId: new Types.ObjectId(userId),
-          status: WithdrawalStatus.PENDING,
-        },
-      },
-      { $group: { _id: null, total: { $sum: '$amount' } } },
-    ]);
-    const pendingSum: number = pendingAgg[0]?.total ?? 0;
-    const available = wallet.balance - pendingSum;
-
-    if (available < amountKobo) {
-      throw new BadRequestException(
-        `Insufficient available balance. You have ₦${(available / 100).toLocaleString('en-NG')} available (₦${(pendingSum / 100).toLocaleString('en-NG')} already pending).`,
-      );
-    }
-
     const reference = generateReference('WDR');
 
-    // Persist a PENDING request. No wallet debit, no wallet transaction —
-    // both happen in approveWithdrawal() when the admin clicks Approve.
-    const withdrawal = await this.withdrawalModel.create({
-      userId: new Types.ObjectId(userId),
-      walletId: wallet._id,
-      amount: amountKobo,
-      currency: 'NGN',
-      reference,
-      status: WithdrawalStatus.PENDING,
-      bankName: bankAccount.bankName,
-      bankCode: bankAccount.bankCode,
-      accountNumber: bankAccount.accountNumber,
-      accountName: bankAccount.accountName,
-    });
+    const session = await this.connection.startSession();
+    session.startTransaction();
+    let withdrawalId: Types.ObjectId | undefined;
+
+    try {
+      // Race-safe atomic debit.
+      const wallet = await this.walletModel.findOneAndUpdate(
+        {
+          userId: new Types.ObjectId(userId),
+          balance: { $gte: amountKobo },
+        },
+        { $inc: { balance: -amountKobo }, $set: { lastTransactionAt: new Date() } },
+        { new: true, session },
+      );
+      if (!wallet) {
+        const current = await this.walletModel
+          .findOne({ userId: new Types.ObjectId(userId) })
+          .select('balance')
+          .lean();
+        const availableNaira = ((current?.balance ?? 0) / 100).toLocaleString('en-NG');
+        throw new BadRequestException(
+          `Insufficient balance. You have ₦${availableNaira} available.`,
+        );
+      }
+
+      // PROCESSING debit shown in the user's transaction history.
+      await this.walletTxnModel.create(
+        [
+          {
+            userId: new Types.ObjectId(userId),
+            walletId: wallet._id,
+            type: TransactionType.DEBIT,
+            category: TransactionCategory.MANUAL,
+            source: TransactionSource.MANUAL_ADJUSTMENT,
+            amount: amountKobo,
+            currency: 'NGN',
+            reference,
+            status: TransactionStatus.PROCESSING,
+            balanceBefore: wallet.balance + amountKobo,
+            balanceAfter: wallet.balance,
+            narration: `Withdrawal to ${bankAccount.bankName} - ${bankAccount.accountNumber}`,
+            meta: {
+              withdrawalType: 'MANUAL_PAYOUT',
+              bankName: bankAccount.bankName,
+              accountNumber: bankAccount.accountNumber,
+              accountName: bankAccount.accountName,
+            },
+          },
+        ],
+        { session },
+      );
+
+      const [withdrawal] = await this.withdrawalModel.create(
+        [
+          {
+            userId: new Types.ObjectId(userId),
+            walletId: wallet._id,
+            amount: amountKobo,
+            currency: 'NGN',
+            reference,
+            status: WithdrawalStatus.PROCESSING,
+            bankName: bankAccount.bankName,
+            bankCode: bankAccount.bankCode,
+            accountNumber: bankAccount.accountNumber,
+            accountName: bankAccount.accountName,
+            walletTransactionReference: reference,
+          },
+        ],
+        { session },
+      );
+
+      withdrawalId = withdrawal._id;
+      await session.commitTransaction();
+    } catch (err) {
+      await session.abortTransaction();
+      throw err;
+    } finally {
+      session.endSession();
+    }
+
+    const withdrawal = await this.withdrawalModel.findById(withdrawalId).lean();
+    if (!withdrawal) {
+      // Should never happen — the commit above just wrote the row.
+      throw new InternalServerErrorException('Withdrawal record went missing after commit');
+    }
 
     // Notify admins (best-effort — never blocks the response).
-    this.notifyAdminsOfWithdrawal(withdrawal, userId).catch((err) =>
-      this.logger.error(`Failed to send admin withdrawal alert: ${err.message}`),
+    this.notifyAdminsOfWithdrawal(withdrawal as WithdrawalDocument, userId).catch(
+      (err) => this.logger.error(`Failed to send admin withdrawal alert: ${err.message}`),
     );
 
-    return withdrawal.toJSON();
+    return withdrawal;
   }
 
   /**
@@ -397,14 +444,16 @@ export class WithdrawalService {
   }
 
   /**
-   * Approve a PENDING withdrawal — debits the user's wallet in one step and
-   * marks the withdrawal SUCCESS. The admin is expected to have sent the
-   * money out-of-band (via their own bank app) BEFORE clicking Approve.
+   * Approve a withdrawal — flips its status to SUCCESS. The admin is expected
+   * to have sent the money out-of-band (via their own bank app) BEFORE
+   * clicking Approve.
    *
-   * Everything happens inside a Mongo session so the debit + audit
-   * transaction + withdrawal update either all commit or all roll back.
-   * The `$gte: amount` guard in the wallet update is what prevents an
-   * over-debit if concurrent requests race past the submit-time check.
+   * Handles two shapes of records:
+   *  - PROCESSING (current flow) — wallet was already debited on submit. Just
+   *    flip the WalletTransaction from PROCESSING → SUCCESS and mark the
+   *    withdrawal SUCCESS. No wallet touch.
+   *  - PENDING (legacy flow, kept for records created before this flow flip)
+   *    — do the atomic debit + create a SUCCESS WalletTransaction here.
    */
   async approveWithdrawal(
     withdrawalId: string,
@@ -413,58 +462,76 @@ export class WithdrawalService {
   ): Promise<WithdrawalDocument> {
     const withdrawal = await this.withdrawalModel.findById(withdrawalId);
     if (!withdrawal) throw new NotFoundException('Withdrawal not found');
-    if (withdrawal.status !== WithdrawalStatus.PENDING) {
+    const isProcessing = withdrawal.status === WithdrawalStatus.PROCESSING;
+    const isLegacyPending = withdrawal.status === WithdrawalStatus.PENDING;
+    if (!isProcessing && !isLegacyPending) {
       throw new BadRequestException(
-        `Withdrawal is ${withdrawal.status} — only PENDING requests can be approved`,
+        `Withdrawal is ${withdrawal.status} — only PROCESSING requests can be approved`,
       );
     }
 
     const amountKobo = withdrawal.amount;
-    const wallet = await this.walletModel.findById(withdrawal.walletId);
-    if (!wallet) throw new NotFoundException('Wallet not found for this withdrawal');
 
     const session = await this.connection.startSession();
     session.startTransaction();
     try {
-      // Atomic debit — the `$gte` guarantees we don't go negative under a race.
-      const updatedWallet = await this.walletModel.findOneAndUpdate(
-        { _id: wallet._id, balance: { $gte: amountKobo } },
-        { $inc: { balance: -amountKobo }, $set: { lastTransactionAt: new Date() } },
-        { new: true, session },
-      );
-      if (!updatedWallet) {
-        throw new BadRequestException(
-          'User no longer has sufficient balance to cover this withdrawal',
-        );
-      }
-
-      await this.walletTxnModel.create(
-        [
+      if (isProcessing) {
+        // Wallet already debited on submit — just flip the audit transaction
+        // from PROCESSING → SUCCESS to reflect that the payout is complete.
+        await this.walletTxnModel.updateOne(
+          { reference: withdrawal.reference },
           {
-            userId: withdrawal.userId,
-            walletId: wallet._id,
-            type: TransactionType.DEBIT,
-            category: TransactionCategory.MANUAL,
-            source: TransactionSource.MANUAL_ADJUSTMENT,
-            amount: amountKobo,
-            currency: 'NGN',
-            reference: withdrawal.reference,
-            status: TransactionStatus.SUCCESS,
-            balanceBefore: wallet.balance,
-            balanceAfter: wallet.balance - amountKobo,
-            narration: `Withdrawal to ${withdrawal.bankName} - ${withdrawal.accountNumber}`,
-            meta: {
-              withdrawalType: 'MANUAL_PAYOUT',
-              withdrawalId: withdrawal._id,
-              bankName: withdrawal.bankName,
-              accountNumber: withdrawal.accountNumber,
-              accountName: withdrawal.accountName,
-              approvedBy: adminUserId,
+            $set: {
+              status: TransactionStatus.SUCCESS,
+              'meta.approvedBy': adminUserId,
             },
           },
-        ],
-        { session },
-      );
+          { session },
+        );
+      } else {
+        // Legacy PENDING record — do the debit now (old admin-approved flow).
+        const wallet = await this.walletModel.findById(withdrawal.walletId).session(session);
+        if (!wallet) throw new NotFoundException('Wallet not found for this withdrawal');
+
+        const updatedWallet = await this.walletModel.findOneAndUpdate(
+          { _id: wallet._id, balance: { $gte: amountKobo } },
+          { $inc: { balance: -amountKobo }, $set: { lastTransactionAt: new Date() } },
+          { new: true, session },
+        );
+        if (!updatedWallet) {
+          throw new BadRequestException(
+            'User no longer has sufficient balance to cover this withdrawal',
+          );
+        }
+
+        await this.walletTxnModel.create(
+          [
+            {
+              userId: withdrawal.userId,
+              walletId: wallet._id,
+              type: TransactionType.DEBIT,
+              category: TransactionCategory.MANUAL,
+              source: TransactionSource.MANUAL_ADJUSTMENT,
+              amount: amountKobo,
+              currency: 'NGN',
+              reference: withdrawal.reference,
+              status: TransactionStatus.SUCCESS,
+              balanceBefore: wallet.balance,
+              balanceAfter: wallet.balance - amountKobo,
+              narration: `Withdrawal to ${withdrawal.bankName} - ${withdrawal.accountNumber}`,
+              meta: {
+                withdrawalType: 'MANUAL_PAYOUT',
+                withdrawalId: withdrawal._id,
+                bankName: withdrawal.bankName,
+                accountNumber: withdrawal.accountNumber,
+                accountName: withdrawal.accountName,
+                approvedBy: adminUserId,
+              },
+            },
+          ],
+          { session },
+        );
+      }
 
       withdrawal.status = WithdrawalStatus.SUCCESS;
       withdrawal.processedBy = new Types.ObjectId(adminUserId);
@@ -524,7 +591,9 @@ export class WithdrawalService {
   }
 
   /**
-   * Reject a PENDING withdrawal — no wallet debit, request marked REJECTED.
+   * Reject a withdrawal — marks the request REJECTED and refunds the wallet
+   * if the wallet was already debited on submit (PROCESSING flow). Legacy
+   * PENDING records were never debited, so no refund is needed for those.
    * Requires a note so the user gets a real explanation.
    */
   async rejectWithdrawal(
@@ -537,18 +606,89 @@ export class WithdrawalService {
     }
     const withdrawal = await this.withdrawalModel.findById(withdrawalId);
     if (!withdrawal) throw new NotFoundException('Withdrawal not found');
-    if (withdrawal.status !== WithdrawalStatus.PENDING) {
+    const isProcessing = withdrawal.status === WithdrawalStatus.PROCESSING;
+    const isLegacyPending = withdrawal.status === WithdrawalStatus.PENDING;
+    if (!isProcessing && !isLegacyPending) {
       throw new BadRequestException(
-        `Withdrawal is ${withdrawal.status} — only PENDING requests can be rejected`,
+        `Withdrawal is ${withdrawal.status} — only PROCESSING requests can be rejected`,
       );
     }
 
-    withdrawal.status = WithdrawalStatus.REJECTED;
-    withdrawal.processedBy = new Types.ObjectId(adminUserId);
-    withdrawal.processedAt = new Date();
-    withdrawal.adminNote = note.trim();
-    withdrawal.failureReason = note.trim();
-    await withdrawal.save();
+    if (isProcessing) {
+      // Refund the wallet + mark the original debit REVERSED atomically.
+      const session = await this.connection.startSession();
+      session.startTransaction();
+      try {
+        const wallet = await this.walletModel.findOneAndUpdate(
+          { _id: withdrawal.walletId },
+          { $inc: { balance: withdrawal.amount }, $set: { lastTransactionAt: new Date() } },
+          { new: true, session },
+        );
+        if (!wallet) throw new NotFoundException('Wallet not found for refund');
+
+        // Flip the original PROCESSING debit → REVERSED so the user sees why
+        // the amount came back.
+        await this.walletTxnModel.updateOne(
+          { reference: withdrawal.reference },
+          {
+            $set: {
+              status: TransactionStatus.REVERSED,
+              'meta.rejectedBy': adminUserId,
+              'meta.rejectionReason': note.trim(),
+            },
+          },
+          { session },
+        );
+
+        // Add an explicit REFUND credit so the ledger tells the whole story.
+        await this.walletTxnModel.create(
+          [
+            {
+              userId: withdrawal.userId,
+              walletId: withdrawal.walletId,
+              type: TransactionType.CREDIT,
+              category: TransactionCategory.REFUND,
+              source: TransactionSource.REFUND,
+              amount: withdrawal.amount,
+              currency: 'NGN',
+              reference: generateReference('WDR_REFUND'),
+              status: TransactionStatus.SUCCESS,
+              balanceBefore: wallet.balance - withdrawal.amount,
+              balanceAfter: wallet.balance,
+              narration: `Refund: rejected withdrawal ${withdrawal.reference}`,
+              meta: {
+                originalReference: withdrawal.reference,
+                reason: note.trim(),
+                rejectedBy: adminUserId,
+              },
+            },
+          ],
+          { session },
+        );
+
+        withdrawal.status = WithdrawalStatus.REJECTED;
+        withdrawal.processedBy = new Types.ObjectId(adminUserId);
+        withdrawal.processedAt = new Date();
+        withdrawal.adminNote = note.trim();
+        withdrawal.failureReason = note.trim();
+        await withdrawal.save({ session });
+
+        await session.commitTransaction();
+      } catch (err) {
+        await session.abortTransaction();
+        throw err;
+      } finally {
+        session.endSession();
+      }
+    } else {
+      // Legacy PENDING — nothing was debited, so just mark it.
+      withdrawal.status = WithdrawalStatus.REJECTED;
+      withdrawal.processedBy = new Types.ObjectId(adminUserId);
+      withdrawal.processedAt = new Date();
+      withdrawal.adminNote = note.trim();
+      withdrawal.failureReason = note.trim();
+      await withdrawal.save();
+    }
 
     this.logger.log(
       `Admin ${adminUserId} rejected withdrawal ${withdrawal.reference}: ${note.trim()}`,
