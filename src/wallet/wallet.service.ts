@@ -38,6 +38,8 @@ import { KorapayTransactionType } from "../korapay/schemas/korapay-transaction.s
 import { ConfigService } from "@nestjs/config";
 import { NotificationsService } from "../notifications/notifications.service";
 import { NotificationType } from "../notifications/schemas/user-notification.schema";
+import { EmailService } from "../email/email.service";
+import { SettingsService } from "../settings/settings.service";
 import {
   generateReference,
   paginate,
@@ -95,6 +97,8 @@ export class WalletService {
     private readonly korapayService: KorapayService,
     private readonly configService: ConfigService,
     private readonly notificationsService: NotificationsService,
+    private readonly emailService: EmailService,
+    private readonly settingsService: SettingsService,
     private readonly moduleRef: ModuleRef,
   ) {}
 
@@ -749,6 +753,49 @@ export class WalletService {
       .catch((err) =>
         this.logger.error(`Failed to send topup notification: ${err.message}`),
       );
+
+    // Fire-and-forget admin email alert
+    this.notifyAdminsOfTopup(userId, amountKobo, reference).catch((err) =>
+      this.logger.warn(`Admin topup alert failed: ${err.message}`),
+    );
+  }
+
+  /**
+   * Send an ops-team email whenever a user's wallet gets funded so admins can
+   * eyeball inflows in real time. Silent no-op if no recipients configured.
+   */
+  private async notifyAdminsOfTopup(
+    userId: string,
+    amountKobo: number,
+    reference: string,
+  ): Promise<void> {
+    const recipients = await this.settingsService.getAdminAlertEmails();
+    if (recipients.length === 0) return;
+
+    const user = await this.userModel
+      .findById(userId)
+      .select('email fullName phone')
+      .lean();
+
+    const amountNaira = toNaira(amountKobo);
+    await this.emailService.sendAdminEventAlert({
+      recipients,
+      subject: `[Zinkite] Wallet top-up — ₦${amountNaira.toLocaleString('en-NG')}`,
+      title: 'Wallet top-up received',
+      description:
+        'A user has funded their wallet. This is an informational alert — no action required.',
+      reference,
+      rows: [
+        { label: 'User', value: `${user?.fullName || '—'} (${user?.email || '—'})` },
+        { label: 'Phone', value: user?.phone || '—' },
+        {
+          label: 'Amount',
+          value: `₦${amountNaira.toLocaleString('en-NG', { minimumFractionDigits: 2 })}`,
+        },
+        { label: 'Reference', value: reference },
+        { label: 'When', value: new Date().toLocaleString('en-NG') },
+      ],
+    });
   }
 
   async updateTransactionStatus(

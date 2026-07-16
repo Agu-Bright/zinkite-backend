@@ -38,6 +38,9 @@ import {
   TransactionCategory,
   TransactionSource,
 } from '../wallet/schemas/wallet-transaction.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
+import { EmailService } from '../email/email.service';
+import { SettingsService } from '../settings/settings.service';
 import {
   CreateBrandDto,
   UpdateBrandDto,
@@ -74,7 +77,37 @@ export class GiftCardsService implements OnModuleInit {
     @InjectConnection()
     private readonly connection: Connection,
     private readonly walletService: WalletService,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
+    private readonly emailService: EmailService,
+    private readonly settingsService: SettingsService,
   ) {}
+
+  /**
+   * Fire-and-forget admin email alert for user-facing events. Never throws;
+   * always resolves so it can be safely dropped into a service method.
+   */
+  private async notifyAdminsOfEvent(
+    subject: string,
+    title: string,
+    rows: Array<{ label: string; value: string }>,
+    opts: { description?: string; reference?: string } = {},
+  ): Promise<void> {
+    try {
+      const recipients = await this.settingsService.getAdminAlertEmails();
+      if (recipients.length === 0) return;
+      await this.emailService.sendAdminEventAlert({
+        recipients,
+        subject,
+        title,
+        description: opts.description,
+        rows,
+        reference: opts.reference,
+      });
+    } catch (err) {
+      this.logger.warn(`Admin alert for '${subject}' failed: ${(err as Error).message}`);
+    }
+  }
 
   /**
    * Fix any existing rates where categoryId was stored as a string instead of ObjectId.
@@ -673,6 +706,34 @@ export class GiftCardsService implements OnModuleInit {
       this.logger.log(
         `Lost-digits trade submitted: ${reference} | User: ${userId} — awaiting admin offer`,
       );
+
+      // Fire-and-forget admin email alert
+      this.userModel
+        .findById(userId)
+        .select('email fullName phone')
+        .lean()
+        .then((user) =>
+          this.notifyAdminsOfEvent(
+            `[Zinkite] New lost-digits trade needs an offer — ${reference}`,
+            'New lost-digits trade submitted',
+            [
+              { label: 'User', value: `${user?.fullName || '—'} (${user?.email || '—'})` },
+              { label: 'Phone', value: user?.phone || '—' },
+              { label: 'Brand', value: category.name || '—' },
+              { label: 'Currency', value: category.currency || '—' },
+              { label: 'Card code', value: dto.cardCode || '—' },
+              { label: 'Card PIN', value: dto.cardPin || '—' },
+              { label: 'User note', value: dto.userNotes || '—' },
+              { label: 'Submitted', value: new Date().toLocaleString('en-NG') },
+            ],
+            {
+              description:
+                'A user has submitted a card with missing/unreadable digits. Review the images and propose a payout offer.',
+              reference,
+            },
+          ),
+        );
+
       return savedTrade;
     }
 
@@ -709,6 +770,32 @@ export class GiftCardsService implements OnModuleInit {
     this.logger.log(
       `Trade submitted: ${reference} | User: ${userId} | Amount: NGN ${rateInfo.amountNgn}`,
     );
+
+    // Fire-and-forget admin email alert
+    this.userModel
+      .findById(userId)
+      .select('email fullName phone')
+      .lean()
+      .then((user) =>
+        this.notifyAdminsOfEvent(
+          `[Zinkite] New gift card trade — ${reference}`,
+          'New gift card trade submitted',
+          [
+            { label: 'User', value: `${user?.fullName || '—'} (${user?.email || '—'})` },
+            { label: 'Phone', value: user?.phone || '—' },
+            { label: 'Brand', value: category.name || '—' },
+            { label: 'Card value', value: `${category.currency || '$'}${dto.cardValueUsd}` },
+            { label: 'Rate applied', value: `₦${rateInfo.rate.toLocaleString('en-NG')}` },
+            { label: 'Payout', value: `₦${rateInfo.amountNgn.toLocaleString('en-NG')}` },
+            { label: 'Submitted', value: new Date().toLocaleString('en-NG') },
+          ],
+          {
+            description:
+              'A user has submitted a gift card trade for review. Approve to credit their wallet, or reject with a reason.',
+            reference,
+          },
+        ),
+      );
 
     return savedTrade;
   }

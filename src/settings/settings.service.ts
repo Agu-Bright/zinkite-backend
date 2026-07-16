@@ -178,6 +178,26 @@ export class SettingsService implements OnModuleInit {
   }
 
   /**
+   * Parsed list of admin emails that should receive event alerts (new trades,
+   * withdrawals, top-ups, etc). Reads the `admin_notification_emails` setting
+   * (comma-, semicolon-, whitespace-, or newline-separated) and falls back to
+   * ADMIN_NOTIFICATION_EMAILS / ADMIN_EMAIL env vars if the setting is blank.
+   */
+  async getAdminAlertEmails(): Promise<string[]> {
+    let raw = (await this.getValue<string>('admin_notification_emails', '')) || '';
+    if (!raw.trim()) {
+      raw =
+        process.env.ADMIN_NOTIFICATION_EMAILS ||
+        process.env.ADMIN_EMAIL ||
+        '';
+    }
+    return raw
+      .split(/[,;\s]+/)
+      .map((s) => s.trim())
+      .filter((s) => /.+@.+\..+/.test(s));
+  }
+
+  /**
    * Fetch a single setting's value by key. Returns the value as stored,
    * or `defaultValue` if the key doesn't exist. Used by other services that
    * need server-side, admin-editable configuration (e.g. admin notification

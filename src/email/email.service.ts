@@ -14,6 +14,15 @@ export interface SendEmailOptions {
   text?: string;
 }
 
+export interface AdminEventAlertOptions {
+  recipients: string[];
+  subject: string;
+  title: string;
+  description?: string;
+  rows: Array<{ label: string; value: string }>;
+  reference?: string;
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -679,5 +688,72 @@ export class EmailService {
       subject: `${isCredit ? 'Credit' : 'Debit'} Alert: ${symbol}${currency} ${amount.toLocaleString()}`,
       html,
     });
+  }
+
+  /**
+   * Send a generic event alert to a list of admin email addresses. Used by
+   * services (giftcards, wallet, complaints, etc) to notify ops about
+   * user-facing events without each one having to reinvent the HTML template.
+   * Silent no-op when recipients is empty.
+   */
+  async sendAdminEventAlert(options: AdminEventAlertOptions): Promise<void> {
+    if (!options.recipients || options.recipients.length === 0) {
+      this.logger.warn(
+        `sendAdminEventAlert('${options.subject}') skipped — no recipients configured`,
+      );
+      return;
+    }
+
+    const rowsHtml = options.rows
+      .map(
+        (r) => `
+          <tr>
+            <td style="padding:8px 12px;color:#6B7280;font-size:13px;border-bottom:1px solid #E5E7EB;">${r.label}</td>
+            <td style="padding:8px 12px;color:#111827;font-size:14px;font-weight:600;border-bottom:1px solid #E5E7EB;">${r.value}</td>
+          </tr>`,
+      )
+      .join('');
+
+    const referenceRow = options.reference
+      ? `<p style="color:#6B7280;font-size:12px;margin-top:8px;">Reference: <span style="font-family:monospace;color:#003CED;">${options.reference}</span></p>`
+      : '';
+
+    const descriptionHtml = options.description
+      ? `<p style="color:#4B5563;font-size:14px;line-height:1.5;margin:0 0 16px 0;">${options.description}</p>`
+      : '';
+
+    const html = `<!DOCTYPE html>
+      <html><head><meta charset="utf-8"></head>
+      <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F3F4F6;padding:24px;margin:0;">
+        <div style="max-width:600px;margin:auto;background:white;border-radius:12px;overflow:hidden;">
+          <div style="background:linear-gradient(135deg,#003CED 0%,#2DFFC4 100%);padding:24px;">
+            <h2 style="color:white;margin:0;font-size:20px;">${options.title}</h2>
+            ${referenceRow}
+          </div>
+          <div style="padding:24px;">
+            ${descriptionHtml}
+            <table style="width:100%;border-collapse:collapse;background:#F9FAFB;border-radius:8px;overflow:hidden;">
+              ${rowsHtml}
+            </table>
+            <p style="color:#9CA3AF;font-size:12px;margin-top:24px;">
+              Sent ${new Date().toLocaleString('en-NG', { timeZone: 'Africa/Lagos' })} (WAT)
+            </p>
+          </div>
+          <div style="background:#F9FAFB;padding:16px;text-align:center;color:#9CA3AF;font-size:11px;">
+            Zinkite Ops Alert — configured recipients receive this because their address is listed in Admin → Settings → Admin Notification Emails.
+          </div>
+        </div>
+      </body></html>`;
+
+    await Promise.allSettled(
+      options.recipients.map((to) =>
+        this.send({ to, subject: options.subject, html }).catch((err) => {
+          this.logger.warn(
+            `Admin alert to ${to} failed for '${options.subject}': ${err.message}`,
+          );
+          return false;
+        }),
+      ),
+    );
   }
 }

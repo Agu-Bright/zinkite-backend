@@ -24,6 +24,7 @@ import {
 import { WalletModule } from '../wallet/wallet.module';
 import { UsersModule } from '../users/users.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { SettingsModule } from '../settings/settings.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     forwardRef(() => WalletModule),
     UsersModule,
     NotificationsModule,
+    SettingsModule,
   ],
   controllers: [GiftCardsController],
   providers: [GiftCardsService],
