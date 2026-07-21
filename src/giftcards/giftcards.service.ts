@@ -41,6 +41,7 @@ import {
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { EmailService } from '../email/email.service';
 import { SettingsService } from '../settings/settings.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   CreateBrandDto,
   UpdateBrandDto,
@@ -81,6 +82,7 @@ export class GiftCardsService implements OnModuleInit {
     private readonly userModel: Model<UserDocument>,
     private readonly emailService: EmailService,
     private readonly settingsService: SettingsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -957,7 +959,102 @@ export class GiftCardsService implements OnModuleInit {
         .populate('brandId', 'name slug logoUrl')
         .populate('categoryId', 'name slug cardType');
 
-      return populated || trade;
+      // Fire user push notification + admin email alert
+      // (post-commit, fire-and-forget so failures never roll back the trade)
+      const finalTrade = populated || trade;
+      const amountKobo = trade.offerAmount || 0;
+      const amountNaira = amountKobo / 100;
+      const tradeIdStr = trade._id.toString();
+      const reference = trade.reference;
+
+      if (dto.accept) {
+        this.notificationsService
+          .sendToUser(
+            userId,
+            'Offer Accepted — Wallet Credited',
+            `Your wallet has been credited with ₦${amountNaira.toLocaleString('en-NG')} for gift card trade ${reference}.`,
+            {
+              type: 'trade_approved',
+              tradeId: tradeIdStr,
+              reference,
+            },
+            'TRADE' as any,
+            'trade_approved',
+          )
+          .catch((err) =>
+            this.logger.error(`Trade acceptance push failed: ${err.message}`),
+          );
+      } else {
+        this.notificationsService
+          .sendToUser(
+            userId,
+            'Offer Declined',
+            `You declined the offer of ₦${amountNaira.toLocaleString('en-NG')} on gift card trade ${reference}. The trade has been closed.`,
+            {
+              type: 'trade_rejected',
+              tradeId: tradeIdStr,
+              reference,
+            },
+            'TRADE' as any,
+            'trade_rejected',
+          )
+          .catch((err) =>
+            this.logger.error(`Trade rejection push failed: ${err.message}`),
+          );
+      }
+
+      // Admin email alert — every address in admin_notification_emails hears
+      // about the accept/decline decision.
+      const user = await this.userModel
+        .findById(userId)
+        .select('email fullName phone')
+        .lean();
+
+      const brand = (finalTrade as any).brandId as any;
+      const brandName =
+        (brand && typeof brand === 'object' && (brand.name || brand.slug)) ||
+        '—';
+
+      const subject = dto.accept
+        ? `[Zinkite] User accepted lost-digits offer — ${reference}`
+        : `[Zinkite] User declined lost-digits offer — ${reference}`;
+      const title = dto.accept
+        ? 'Lost-digits offer accepted'
+        : 'Lost-digits offer declined';
+      const description = dto.accept
+        ? `The user accepted the offer of ₦${amountNaira.toLocaleString('en-NG')}. Their wallet has been credited automatically.`
+        : `The user declined the offer of ₦${amountNaira.toLocaleString('en-NG')}. The trade has been cancelled — no wallet touch.`;
+
+      this.notifyAdminsOfEvent(
+        subject,
+        title,
+        [
+          {
+            label: 'User',
+            value: `${user?.fullName || '—'} (${user?.email || '—'})`,
+          },
+          { label: 'Phone', value: user?.phone || '—' },
+          { label: 'Brand', value: brandName },
+          {
+            label: 'Offer amount',
+            value: `₦${amountNaira.toLocaleString('en-NG')}`,
+          },
+          {
+            label: 'Decision',
+            value: dto.accept ? 'Accepted' : 'Declined',
+          },
+          {
+            label: 'When',
+            value: new Date().toLocaleString('en-NG'),
+          },
+        ],
+        {
+          description,
+          reference,
+        },
+      );
+
+      return finalTrade;
     } catch (error) {
       await session.abortTransaction();
       this.logger.error(
