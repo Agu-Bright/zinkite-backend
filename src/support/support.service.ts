@@ -29,6 +29,8 @@ import {
   MyTicketsQueryDto,
   TicketsQueryDto,
 } from './dto';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/schemas/user-notification.schema';
 
 @Injectable()
 export class SupportService {
@@ -37,6 +39,7 @@ export class SupportService {
   constructor(
     @InjectModel(SupportTicket.name)
     private readonly ticketModel: Model<SupportTicketDocument>,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   // ── Helpers ────────────────────────────────────────────
@@ -290,6 +293,31 @@ export class SupportService {
     }
 
     await ticket.save();
+
+    // Internal notes are admin-only. Public replies notify the customer and
+    // deep-link them directly to this conversation.
+    if (!dto.isInternal) {
+      const body = dto.content.trim().replace(/\s+/g, ' ');
+      void this.notificationsService
+        .sendToUser(
+          ticket.userId.toString(),
+          `New reply on ${ticket.ticketNumber}`,
+          body.length > 140 ? `${body.slice(0, 137)}...` : body,
+          {
+            type: 'support_reply',
+            ticketId: ticket._id.toString(),
+            ticketNumber: ticket.ticketNumber,
+          },
+          NotificationType.SYSTEM,
+          'support_reply',
+        )
+        .catch((error) =>
+          this.logger.error(
+            `Support reply notification failed for ${ticket.ticketNumber}: ${error.message}`,
+          ),
+        );
+    }
+
     return ticket;
   }
 
