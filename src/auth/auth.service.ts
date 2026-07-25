@@ -110,13 +110,21 @@ export class AuthService {
   /**
    * Generate a unique referral code for new users
    */
-  private generateReferralCode(): string {
+  private generateReferralCodeValue(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no I/O/0/1
     let code = '';
     for (let i = 0; i < 6; i++) {
       code += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     return `PAY-${code}`;
+  }
+
+  private async generateUniqueReferralCode(): Promise<string> {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const code = this.generateReferralCodeValue();
+      if (!(await this.usersService.findByReferralCode(code))) return code;
+    }
+    throw new BadRequestException('Could not generate a referral code. Please try again.');
   }
 
   async register(
@@ -129,16 +137,19 @@ export class AuthService {
       // Resolve referrer if referral code provided
       let referredBy: Types.ObjectId | undefined;
       if (dto.referralCode) {
+        const normalizedReferralCode = dto.referralCode.trim().toUpperCase();
         const referrer = await this.usersService.findByReferralCode(
-          dto.referralCode,
+          normalizedReferralCode,
         );
-        if (referrer) {
-          referredBy = referrer._id;
+        if (!referrer) {
+          throw new BadRequestException('Invalid referral code');
         }
+        referredBy = referrer._id;
+        dto.referralCode = normalizedReferralCode;
       }
 
       // Generate unique referral code for new user
-      const referralCode = this.generateReferralCode();
+      const referralCode = await this.generateUniqueReferralCode();
 
       // Create user
       const user = await this.usersService.create(
@@ -159,11 +170,12 @@ export class AuthService {
 
       // Create referral record if user was referred
       if (referredBy && dto.referralCode) {
-        this.referralService
-          .createReferral(referredBy, user._id, dto.referralCode)
-          .catch((err) => {
-            this.logger.error(`Failed to create referral record: ${err.message}`);
-          });
+        await this.referralService.createReferral(
+          referredBy,
+          user._id,
+          dto.referralCode,
+          session,
+        );
       }
 
       // Generate and send OTP

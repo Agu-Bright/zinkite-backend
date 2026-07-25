@@ -25,6 +25,7 @@ export enum TransactionCategory {
   REFUND = "REFUND",
   GIFTCARD_BUY = "GIFTCARD_BUY",
   TASK_REWARD = "TASK_REWARD",
+  REFERRAL_REWARD = "REFERRAL_REWARD",
 }
 
 export enum TransactionSource {
@@ -38,6 +39,7 @@ export enum TransactionSource {
   DVA_TRANSFER = "DVA_TRANSFER",
   GIFTCARD_SHOP = "GIFTCARD_SHOP",
   TASK_REWARD = "TASK_REWARD",
+  REFERRAL_REWARD = "REFERRAL_REWARD",
 }
 
 export enum TransactionStatus {
@@ -95,6 +97,18 @@ export class WalletTransaction {
 
   @Prop()
   balanceAfter: number;
+
+  @Prop({ type: Boolean, default: false, index: true })
+  isDeleted: boolean;
+
+  @Prop({ type: Date, default: null })
+  deletedAt: Date | null;
+
+  @Prop({ type: Types.ObjectId, ref: "AdminUser", default: null })
+  deletedBy: Types.ObjectId | null;
+
+  @Prop({ type: String, default: null })
+  deletionReason: string | null;
 
   createdAt: Date;
   updatedAt: Date;

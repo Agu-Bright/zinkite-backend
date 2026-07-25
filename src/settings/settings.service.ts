@@ -143,6 +143,22 @@ const DEFAULT_SETTINGS: DefaultSetting[] = [
       'Comma-separated list of admin emails that receive withdrawal & ops alerts',
     valueType: 'string',
   },
+  {
+    key: 'referral_reward_amount_kobo',
+    value: 0,
+    category: SettingCategory.GENERAL,
+    isPublic: true,
+    description: 'Wallet reward paid to a referrer for each qualified referral',
+    valueType: 'number',
+  },
+  {
+    key: 'referral_min_transaction_amount_kobo',
+    value: 50000,
+    category: SettingCategory.GENERAL,
+    isPublic: true,
+    description: 'Minimum referred-user transaction required before referral reward',
+    valueType: 'number',
+  },
 ];
 
 @Injectable()

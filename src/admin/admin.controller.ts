@@ -47,6 +47,7 @@ import {
   DenyCreditRequestDto,
   SendNotificationDto,
   NotificationsQueryDto,
+  DeleteTransactionDto,
 } from "./dto";
 import {
   CreateBrandDto,
@@ -68,6 +69,8 @@ import { RolesGuard } from "../common/guards/roles.guard";
 import { CurrentUser, Roles } from "../common/decorators";
 import { JwtPayload } from "../auth/strategies/jwt.strategy";
 import { ProviderHealthService } from "./provider-health.service";
+import { PermissionsGuard } from "./guards/permissions.guard";
+import { RequirePermissions } from "./decorators/require-permissions.decorator";
 
 @ApiTags("Admin")
 @Controller("admin")
@@ -174,7 +177,27 @@ export class AdminController {
   @ApiResponse({ status: 200, description: "Wallet transaction details" })
   @ApiResponse({ status: 404, description: "Transaction not found" })
   async getWalletTransaction(@Param("id") id: string) {
+    validateObjectId(id, "transaction id");
     return this.adminService.getWalletTransactionById(id);
+  }
+
+  @Patch("wallet/transactions/:id/delete")
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions("transactions.delete")
+  @ApiOperation({
+    summary:
+      "Remove a transaction from histories without changing the wallet balance",
+  })
+  @ApiParam({ name: "id", description: "Transaction ID" })
+  @ApiResponse({ status: 200, description: "Transaction removed" })
+  @ApiResponse({ status: 404, description: "Transaction not found" })
+  async deleteWalletTransaction(
+    @Param("id") id: string,
+    @CurrentUser() admin: JwtPayload,
+    @Body() dto: DeleteTransactionDto,
+  ) {
+    validateObjectId(id, "transaction id");
+    return this.adminService.deleteWalletTransaction(id, admin.sub, dto);
   }
 
   @Post("wallet/adjustment")

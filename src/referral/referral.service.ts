@@ -14,7 +14,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
-import { Model, Connection, Types } from 'mongoose';
+import { Model, Connection, Types, ClientSession } from 'mongoose';
 import { Cron } from '@nestjs/schedule';
 import {
   ReferralChallenge,
@@ -25,6 +25,7 @@ import {
   Referral,
   ReferralDocument,
   ReferralStatus,
+  ReferralRewardStatus,
 } from './schemas/referral.schema';
 import { WalletService } from '../wallet/wallet.service';
 import {
@@ -37,8 +38,13 @@ import {
   UpdateChallengeDto,
   ChallengesQueryDto,
   MyReferralsQueryDto,
+  UpdateReferralSettingsDto,
 } from './dto';
 import { paginate, calculateSkip } from '../common/utils/helpers';
+import { SettingsService } from '../settings/settings.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/schemas/user-notification.schema';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class ReferralService {
@@ -51,7 +57,73 @@ export class ReferralService {
     private readonly referralModel: Model<ReferralDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly walletService: WalletService,
+    private readonly settingsService: SettingsService,
+    private readonly notificationsService: NotificationsService,
+    private readonly usersService: UsersService,
   ) {}
+
+  private generateReferralCodeValue(): string {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return `PAY-${code}`;
+  }
+
+  async getOrCreateUserReferralCode(userId: string): Promise<string> {
+    const user = await this.usersService.findById(userId);
+    if (!user) throw new NotFoundException('User not found');
+    if (user.referralCode) return user.referralCode;
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const referralCode = this.generateReferralCodeValue();
+      if (await this.usersService.findByReferralCode(referralCode)) continue;
+
+      try {
+        const updated = await this.usersService.update(userId, { referralCode });
+        return updated.referralCode!;
+      } catch (error: any) {
+        if (error?.code !== 11000) throw error;
+      }
+    }
+
+    throw new BadRequestException(
+      'Could not generate a referral code. Please try again.',
+    );
+  }
+
+  async getReferralSettings() {
+    const [rewardAmountKobo, minTransactionAmountKobo] = await Promise.all([
+      this.settingsService.getValue<number>('referral_reward_amount_kobo', 0),
+      this.settingsService.getValue<number>(
+        'referral_min_transaction_amount_kobo',
+        50000,
+      ),
+    ]);
+
+    return {
+      rewardAmountKobo: Number(rewardAmountKobo) || 0,
+      minTransactionAmountKobo: Number(minTransactionAmountKobo) || 0,
+    };
+  }
+
+  async updateReferralSettings(dto: UpdateReferralSettingsDto) {
+    await this.settingsService.bulkUpdate({
+      settings: [
+        {
+          key: 'referral_reward_amount_kobo',
+          value: toKobo(dto.rewardAmount),
+        },
+        {
+          key: 'referral_min_transaction_amount_kobo',
+          value: toKobo(dto.minTransactionAmount),
+        },
+      ],
+    });
+
+    return this.getReferralSettings();
+  }
 
   // ═══════════════════════════════════════════════════════════
   // CHALLENGE MANAGEMENT (Admin)
@@ -163,6 +235,16 @@ export class ReferralService {
       );
     }
 
+    const otherActiveChallenge = await this.getActiveChallenge();
+    if (
+      otherActiveChallenge &&
+      otherActiveChallenge._id.toString() !== challenge._id.toString()
+    ) {
+      throw new BadRequestException(
+        'Another referral challenge is already active. Pause or end it first.',
+      );
+    }
+
     challenge.status = ChallengeStatus.ACTIVE;
     challenge.updatedBy = new Types.ObjectId(adminId);
     return challenge.save();
@@ -207,6 +289,11 @@ export class ReferralService {
           qualifiedReferrals: { $sum: 1 },
         },
       },
+      {
+        $match: {
+          qualifiedReferrals: { $gte: challenge.referralTarget },
+        },
+      },
       { $sort: { qualifiedReferrals: -1 } },
       { $limit: challenge.numberOfWinners },
     ]);
@@ -214,8 +301,6 @@ export class ReferralService {
     const winners: typeof challenge.winners = [];
 
     for (const entry of leaderboard) {
-      if (entry.qualifiedReferrals <= 0) continue;
-
       try {
         const walletTxn = await this.walletService.creditWallet({
           userId: entry._id,
@@ -265,19 +350,21 @@ export class ReferralService {
     referrerId: Types.ObjectId,
     referredUserId: Types.ObjectId,
     referralCode: string,
+    session?: ClientSession,
   ): Promise<ReferralDocument> {
     // Find active challenge at time of signup
-    const activeChallenge = await this.getActiveChallenge();
+    const activeChallenge = await this.getActiveChallenge(session);
 
     const referral = new this.referralModel({
       referrerId,
       referredUserId,
       challengeId: activeChallenge?._id || null,
-      referralCode,
+      referralCode: referralCode.trim().toUpperCase(),
       status: ReferralStatus.PENDING,
+      rewardStatus: ReferralRewardStatus.PENDING,
     });
 
-    return referral.save();
+    return referral.save(session ? { session } : undefined);
   }
 
   /**
@@ -289,35 +376,156 @@ export class ReferralService {
     transactionAmountKobo: number,
     transactionId?: Types.ObjectId,
   ): Promise<void> {
-    const referral = await this.referralModel.findOne({
+    const pendingReferral = await this.referralModel.findOne({
       referredUserId: new Types.ObjectId(userId),
       status: ReferralStatus.PENDING,
     });
 
-    if (!referral) return; // Not a referred user or already qualified
+    if (!pendingReferral) return; // Not a referred user or already qualified
 
     // Determine minimum transaction amount
     let minAmount = 50000; // Default ₦500 in kobo
-    if (referral.challengeId) {
+    if (pendingReferral.challengeId) {
       const challenge = await this.challengeModel.findById(
-        referral.challengeId,
+        pendingReferral.challengeId,
       );
       if (challenge) {
         minAmount = challenge.minTransactionAmountKobo;
       }
     }
 
+    const baseSettings = await this.getReferralSettings();
+    if (!pendingReferral.challengeId) {
+      minAmount = baseSettings.minTransactionAmountKobo;
+    }
+
     if (transactionAmountKobo < minAmount) return;
 
-    // Qualify the referral
-    referral.status = ReferralStatus.QUALIFIED;
-    referral.qualifiedAt = new Date();
-    referral.qualifyingTransactionId = transactionId || null;
-    await referral.save();
+    // Claim qualification atomically so concurrent successful transactions
+    // cannot qualify or reward the same referral twice.
+    const referral = await this.referralModel.findOneAndUpdate(
+      {
+        _id: pendingReferral._id,
+        status: ReferralStatus.PENDING,
+      },
+      {
+        $set: {
+          status: ReferralStatus.QUALIFIED,
+          qualifiedAt: new Date(),
+          qualifyingTransactionId: transactionId || null,
+          rewardAmountKobo: baseSettings.rewardAmountKobo,
+          rewardStatus:
+            baseSettings.rewardAmountKobo > 0
+              ? ReferralRewardStatus.PENDING
+              : ReferralRewardStatus.NOT_APPLICABLE,
+          rewardFailureReason: null,
+        },
+      },
+      { new: true },
+    );
+
+    if (!referral) return;
 
     this.logger.log(
       `Referral qualified: user ${userId}, referrer ${referral.referrerId}`,
     );
+
+    if (referral.rewardAmountKobo > 0) {
+      await this.payBaseReferralReward(referral._id.toString());
+    }
+  }
+
+  private async payBaseReferralReward(referralId: string): Promise<void> {
+    const referral = await this.referralModel.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(referralId),
+        status: ReferralStatus.QUALIFIED,
+        rewardStatus: {
+          $in: [ReferralRewardStatus.PENDING, ReferralRewardStatus.FAILED],
+        },
+        rewardAmountKobo: { $gt: 0 },
+      },
+      {
+        $set: {
+          rewardStatus: ReferralRewardStatus.PROCESSING,
+          rewardFailureReason: null,
+        },
+      },
+      { new: true },
+    );
+
+    if (!referral) return;
+
+    const reference = `REFERRAL-${referral._id}`;
+
+    try {
+      const walletTxn = await this.walletService.creditWallet({
+        userId: referral.referrerId,
+        amount: referral.rewardAmountKobo,
+        category: TransactionCategory.REFERRAL_REWARD,
+        source: TransactionSource.REFERRAL_REWARD,
+        narration: 'Referral reward',
+        reference,
+        relatedId: referral._id,
+        meta: {
+          referralId: referral._id.toString(),
+          referredUserId: referral.referredUserId.toString(),
+        },
+      });
+
+      await this.referralModel.updateOne(
+        { _id: referral._id },
+        {
+          $set: {
+            rewardStatus: ReferralRewardStatus.PAID,
+            rewardedAt: new Date(),
+            rewardTransactionId: (walletTxn as any)._id,
+            rewardFailureReason: null,
+          },
+        },
+      );
+
+      void this.notificationsService.sendToUser(
+        referral.referrerId.toString(),
+        'Referral reward received',
+        `You earned ₦${(referral.rewardAmountKobo / 100).toLocaleString('en-NG')} for a qualified referral.`,
+        { type: 'wallet_credit', reference },
+        NotificationType.TRANSACTION,
+        'referral_reward',
+      );
+    } catch (error: any) {
+      // A deterministic wallet reference makes retries idempotent. If the
+      // transaction already exists, the reward was previously credited.
+      const existingTxn = await this.connection
+        .collection('wallet_transactions')
+        .findOne({ reference });
+
+      if (existingTxn) {
+        await this.referralModel.updateOne(
+          { _id: referral._id },
+          {
+            $set: {
+              rewardStatus: ReferralRewardStatus.PAID,
+              rewardedAt: existingTxn.createdAt || new Date(),
+              rewardTransactionId: existingTxn._id,
+              rewardFailureReason: null,
+            },
+          },
+        );
+        return;
+      }
+
+      await this.referralModel.updateOne(
+        { _id: referral._id },
+        {
+          $set: {
+            rewardStatus: ReferralRewardStatus.FAILED,
+            rewardFailureReason: error.message || 'Reward credit failed',
+          },
+        },
+      );
+      throw error;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -327,15 +535,35 @@ export class ReferralService {
   /**
    * Get currently active challenge (there should be at most one)
    */
-  async getActiveChallenge(): Promise<ReferralChallengeDocument | null> {
+  async getActiveChallenge(session?: ClientSession): Promise<ReferralChallengeDocument | null> {
     const now = new Date();
-    return this.challengeModel
+    const query = this.challengeModel
       .findOne({
         status: ChallengeStatus.ACTIVE,
         startsAt: { $lte: now },
         endsAt: { $gte: now },
+      });
+    if (session) query.session(session);
+    return query.exec();
+  }
+
+  @Cron('*/10 * * * *')
+  async retryFailedBaseRewards() {
+    const referrals = await this.referralModel
+      .find({
+        status: ReferralStatus.QUALIFIED,
+        rewardStatus: ReferralRewardStatus.FAILED,
+        rewardAmountKobo: { $gt: 0 },
       })
-      .exec();
+      .select('_id')
+      .limit(100)
+      .lean();
+
+    for (const referral of referrals) {
+      await this.payBaseReferralReward(referral._id.toString()).catch((error) =>
+        this.logger.warn(`Referral reward retry failed: ${error.message}`),
+      );
+    }
   }
 
   /**

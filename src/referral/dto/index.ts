@@ -137,3 +137,17 @@ export class MyReferralsQueryDto extends PaginationDto {
   @IsMongoId()
   challengeId?: string;
 }
+
+export class UpdateReferralSettingsDto {
+  @ApiProperty({ description: 'Reward paid per qualified referral in Naira', example: 500 })
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  rewardAmount: number;
+
+  @ApiProperty({ description: 'Minimum qualifying transaction in Naira', example: 500 })
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  minTransactionAmount: number;
+}

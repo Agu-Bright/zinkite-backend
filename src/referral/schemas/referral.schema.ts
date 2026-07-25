@@ -15,6 +15,14 @@ export enum ReferralStatus {
   EXPIRED = 'EXPIRED',
 }
 
+export enum ReferralRewardStatus {
+  PENDING = 'PENDING',
+  PROCESSING = 'PROCESSING',
+  PAID = 'PAID',
+  FAILED = 'FAILED',
+  NOT_APPLICABLE = 'NOT_APPLICABLE',
+}
+
 @Schema({ timestamps: true, collection: 'referrals' })
 export class Referral {
   /** The user who shared the referral code */
@@ -48,6 +56,27 @@ export class Referral {
   /** The transaction that qualified this referral */
   @Prop({ type: Types.ObjectId, ref: 'WalletTransaction', default: null })
   qualifyingTransactionId: Types.ObjectId | null;
+
+  /** Base per-referral reward captured when the referral qualifies. */
+  @Prop({ type: Number, default: 0 })
+  rewardAmountKobo: number;
+
+  @Prop({
+    type: String,
+    enum: Object.values(ReferralRewardStatus),
+    default: ReferralRewardStatus.PENDING,
+    index: true,
+  })
+  rewardStatus: ReferralRewardStatus;
+
+  @Prop({ type: Date, default: null })
+  rewardedAt: Date | null;
+
+  @Prop({ type: Types.ObjectId, ref: 'WalletTransaction', default: null })
+  rewardTransactionId: Types.ObjectId | null;
+
+  @Prop({ type: String, default: null })
+  rewardFailureReason: string | null;
 
   createdAt: Date;
   updatedAt: Date;

@@ -49,6 +49,7 @@ export const PERMISSIONS = {
   TRANSACTIONS_RETRY: 'transactions.retry',
   TRANSACTIONS_RESOLVE: 'transactions.resolve',
   TRANSACTIONS_EXPORT: 'transactions.export',
+  TRANSACTIONS_DELETE: 'transactions.delete',
 
   // Gift Cards
   GIFTCARDS_TRADES_VIEW: 'giftcards.trades.view',

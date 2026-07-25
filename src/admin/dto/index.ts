@@ -81,6 +81,11 @@ export class UsersQueryDto extends PaginationDto {
   @Transform(({ value }) => value === 'true' || value === true)
   hasPinSet?: boolean;
 
+  @ApiPropertyOptional({ description: 'Only return users with a wallet balance greater than zero' })
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  hasWalletFunds?: boolean;
+
   @ApiPropertyOptional({ description: 'Search by email, phone, or name' })
   @IsOptional()
   @IsString()
@@ -95,6 +100,14 @@ export class UpdateUserStatusDto {
   @ApiProperty({ description: 'Reason for status change' })
   @IsString()
   @MinLength(10)
+  @MaxLength(500)
+  reason: string;
+}
+
+export class DeleteTransactionDto {
+  @ApiProperty({ description: 'Reason for removing the transaction from history' })
+  @IsString()
+  @MinLength(5)
   @MaxLength(500)
   reason: string;
 }

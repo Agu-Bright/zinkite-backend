@@ -16,6 +16,8 @@ import { ReferralController } from './referral.controller';
 import { ReferralAdminController } from './referral-admin.controller';
 import { WalletModule } from '../wallet/wallet.module';
 import { UsersModule } from '../users/users.module';
+import { SettingsModule } from '../settings/settings.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { UsersModule } from '../users/users.module';
     ]),
     forwardRef(() => WalletModule),
     UsersModule,
+    SettingsModule,
+    NotificationsModule,
   ],
   controllers: [ReferralController, ReferralAdminController],
   providers: [ReferralService],

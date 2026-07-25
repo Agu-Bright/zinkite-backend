@@ -22,6 +22,7 @@ import {
   GiftCardTrade,
   GiftCardTradeDocument,
   TradeStatus,
+  TradeType,
 } from "../giftcards/schemas/gift-card-trade.schema";
 import {
   PaystackTransaction,
@@ -55,6 +56,7 @@ import {
   SendNotificationDto,
   NotificationRecipients,
   NotificationsQueryDto,
+  DeleteTransactionDto,
 } from "./dto";
 import { NotificationLog, NotificationLogDocument } from "./schemas/notification-log.schema";
 import { EmailService } from "../email/email.service";
@@ -69,6 +71,11 @@ import {
 import { PaginatedResult } from "../common/dto/pagination.dto";
 import { ReviewTradeDto, TradeQueryDto, MakeOfferDto } from "../giftcards/dto";
 import { NotificationsService } from "../notifications/notifications.service";
+import { AuditService } from "../audit/audit.service";
+import {
+  AuditAction,
+  AuditResource,
+} from "../audit/schemas/audit-log.schema";
 
 @Injectable()
 export class AdminService {
@@ -102,6 +109,7 @@ export class AdminService {
     private readonly giftCardsService: GiftCardsService,
     private readonly emailService: EmailService,
     private readonly notificationsService: NotificationsService,
+    private readonly auditService: AuditService,
   ) {}
 
   /**
@@ -198,6 +206,62 @@ export class AdminService {
     const tradesToday = await this.tradeModel.countDocuments({
       createdAt: { $gte: today },
     });
+    const tradeBreakdownRows = await this.tradeModel.aggregate([
+      {
+        $addFields: {
+          normalizedTradeType: { $ifNull: ["$tradeType", TradeType.STANDARD] },
+        },
+      },
+      {
+        $group: {
+          _id: "$normalizedTradeType",
+          total: { $sum: 1 },
+          pending: {
+            $sum: {
+              $cond: [{ $eq: ["$status", TradeStatus.PENDING] }, 1, 0],
+            },
+          },
+          successful: {
+            $sum: {
+              $cond: [{ $eq: ["$status", TradeStatus.APPROVED] }, 1, 0],
+            },
+          },
+          successfulToday: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$status", TradeStatus.APPROVED] },
+                    { $gte: ["$reviewedAt", today] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+          successfulValueKobo: {
+            $sum: {
+              $cond: [
+                { $eq: ["$status", TradeStatus.APPROVED] },
+                { $ifNull: ["$amountNgn", 0] },
+                0,
+              ],
+            },
+          },
+        },
+      },
+    ]);
+    const tradeStats = (type: TradeType) => {
+      const row = tradeBreakdownRows.find((item) => item._id === type);
+      return {
+        total: row?.total || 0,
+        pending: row?.pending || 0,
+        successful: row?.successful || 0,
+        successfulToday: row?.successfulToday || 0,
+        successfulValueNaira: toNaira(row?.successfulValueKobo || 0),
+      };
+    };
 
     // Paystack topups
     const totalTopups = await this.paystackModel.countDocuments({
@@ -225,6 +289,10 @@ export class AdminService {
       tradesToday,
       totalTopups,
       revenueToday: toNaira(tradeRevenueAgg[0]?.total || 0),
+      tradeBreakdown: {
+        standard: tradeStats(TradeType.STANDARD),
+        lostDigits: tradeStats(TradeType.LOST_DIGITS),
+      },
     };
   }
 
@@ -242,7 +310,7 @@ export class AdminService {
         .limit(10)
         .lean(),
       this.walletTransactionModel
-        .find()
+        .find({ isDeleted: { $ne: true } })
         .populate("userId", "email phone fullName")
         .sort({ createdAt: -1 })
         .limit(10)
@@ -285,6 +353,13 @@ export class AdminService {
       } else {
         filter.transactionPinHash = null;
       }
+    }
+
+    if (query.hasWalletFunds) {
+      const fundedUserIds = await this.walletModel.distinct('userId', {
+        balance: { $gt: 0 },
+      });
+      filter._id = { $in: fundedUserIds };
     }
 
     if (query.search) {
@@ -345,7 +420,10 @@ export class AdminService {
 
     // Get recent transactions
     const recentTransactions = await this.walletTransactionModel
-      .find({ userId: new Types.ObjectId(userId) })
+      .find({
+        userId: new Types.ObjectId(userId),
+        isDeleted: { $ne: true },
+      })
       .sort({ createdAt: -1 })
       .limit(10);
 
@@ -426,7 +504,7 @@ export class AdminService {
   async getAllWalletTransactions(
     query: TransactionsQueryDto,
   ): Promise<PaginatedResult<WalletTransaction>> {
-    const filter: any = {};
+    const filter: any = { isDeleted: { $ne: true } };
 
     if (query.type) {
       filter.type = query.type;
@@ -485,7 +563,10 @@ export class AdminService {
     userId: string,
     query: TransactionsQueryDto,
   ): Promise<PaginatedResult<WalletTransaction>> {
-    const filter: any = { userId: new Types.ObjectId(userId) };
+    const filter: any = {
+      userId: new Types.ObjectId(userId),
+      isDeleted: { $ne: true },
+    };
 
     if (query.type) {
       filter.type = query.type;
@@ -532,7 +613,7 @@ export class AdminService {
    */
   async getWalletTransactionById(id: string): Promise<any> {
     const transaction = await this.walletTransactionModel
-      .findById(id)
+      .findOne({ _id: id, isDeleted: { $ne: true } })
       .populate("userId", "email phone fullName");
 
     if (!transaction) {
@@ -545,6 +626,57 @@ export class AdminService {
       balanceBeforeNaira: toNaira(transaction.balanceBefore ?? 0),
       balanceAfterNaira: toNaira(transaction.balanceAfter ?? 0),
     };
+  }
+
+  /**
+   * Remove a transaction from operational histories without mutating the
+   * wallet balance or destroying the underlying ledger/audit evidence.
+   */
+  async deleteWalletTransaction(
+    id: string,
+    adminId: string,
+    dto: DeleteTransactionDto,
+  ): Promise<{ deleted: true; id: string }> {
+    const transaction = await this.walletTransactionModel.findOne({
+      _id: id,
+      isDeleted: { $ne: true },
+    });
+
+    if (!transaction) {
+      throw new NotFoundException("Wallet transaction not found");
+    }
+
+    transaction.isDeleted = true;
+    transaction.deletedAt = new Date();
+    transaction.deletedBy = new Types.ObjectId(adminId);
+    transaction.deletionReason = dto.reason.trim();
+    await transaction.save();
+
+    await this.auditService.logAdminAction(
+      adminId,
+      AuditAction.ADMIN_TRANSACTION_DELETED,
+      AuditResource.TRANSACTION,
+      id,
+      `Transaction ${transaction.reference} removed from transaction history`,
+      {
+        userId: String(transaction.userId),
+        previousValues: {
+          isDeleted: false,
+          reference: transaction.reference,
+          amount: transaction.amount,
+          type: transaction.type,
+          category: transaction.category,
+          status: transaction.status,
+        },
+        newValues: {
+          isDeleted: true,
+          deletedAt: transaction.deletedAt,
+          deletionReason: transaction.deletionReason,
+        },
+      },
+    );
+
+    return { deleted: true, id };
   }
 
   /**

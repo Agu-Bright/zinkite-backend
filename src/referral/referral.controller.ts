@@ -15,7 +15,6 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { ReferralService } from './referral.service';
-import { UsersService } from '../users/users.service';
 import { MyReferralsQueryDto } from './dto';
 
 @ApiTags('Referral')
@@ -25,8 +24,12 @@ import { MyReferralsQueryDto } from './dto';
 export class ReferralController {
   constructor(
     private readonly referralService: ReferralService,
-    private readonly usersService: UsersService,
   ) {}
+
+  @Get('settings')
+  async getSettings() {
+    return this.referralService.getReferralSettings();
+  }
 
   /**
    * Get active challenges with user's progress
@@ -79,8 +82,9 @@ export class ReferralController {
   @Get('my-code')
   async getMyCode(@Req() req: any) {
     const userId = req.user.userId || req.user.sub;
-    const user = await this.usersService.findById(userId);
-    return { referralCode: user?.referralCode || null };
+    const referralCode =
+      await this.referralService.getOrCreateUserReferralCode(userId);
+    return { referralCode };
   }
 
   /**

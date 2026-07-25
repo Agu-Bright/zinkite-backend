@@ -534,7 +534,10 @@ export class WalletService {
     }
     // ========== END DEBUG ==========
 
-    const filter: any = { userId: new Types.ObjectId(userId) };
+    const filter: any = {
+      userId: new Types.ObjectId(userId),
+      isDeleted: { $ne: true },
+    };
     if (type) filter.type = type;
     if (category) filter.category = category;
     if (status) filter.status = status;

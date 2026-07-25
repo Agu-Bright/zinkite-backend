@@ -24,6 +24,7 @@ import {
   CreateChallengeDto,
   UpdateChallengeDto,
   ChallengesQueryDto,
+  UpdateReferralSettingsDto,
 } from './dto';
 import { RequirePermissions } from '../admin/decorators/require-permissions.decorator';
 
@@ -33,6 +34,18 @@ import { RequirePermissions } from '../admin/decorators/require-permissions.deco
 @ApiBearerAuth('JWT-auth')
 export class ReferralAdminController {
   constructor(private readonly referralService: ReferralService) {}
+
+  @Get('settings')
+  @RequirePermissions('referrals.view')
+  async getSettings() {
+    return this.referralService.getReferralSettings();
+  }
+
+  @Patch('settings')
+  @RequirePermissions('referrals.manage')
+  async updateSettings(@Body() dto: UpdateReferralSettingsDto) {
+    return this.referralService.updateReferralSettings(dto);
+  }
 
   /**
    * Create a new referral challenge
