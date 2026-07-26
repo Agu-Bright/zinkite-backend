@@ -39,6 +39,7 @@ import {
   ChallengesQueryDto,
   MyReferralsQueryDto,
   UpdateReferralSettingsDto,
+  AdminReferralEarningsQueryDto,
 } from './dto';
 import { paginate, calculateSkip } from '../common/utils/helpers';
 import { SettingsService } from '../settings/settings.service';
@@ -741,6 +742,185 @@ export class ReferralService {
   // ═══════════════════════════════════════════════════════════
   // ADMIN STATS
   // ═══════════════════════════════════════════════════════════
+
+  async getAdminReferralEarnings(query: AdminReferralEarningsQueryDto) {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const skip = calculateSkip(page, limit);
+    const search = query.search?.trim();
+
+    const userSearchStage = search
+      ? [{
+          $match: {
+            $or: [
+              { 'user.fullName': { $regex: search, $options: 'i' } },
+              { 'user.email': { $regex: search, $options: 'i' } },
+              { 'user.phone': { $regex: search, $options: 'i' } },
+              { 'user.referralCode': { $regex: search, $options: 'i' } },
+            ],
+          },
+        }]
+      : [];
+
+    const [earningsResult, summaryRows] = await Promise.all([
+      this.referralModel.aggregate([
+        {
+          $group: {
+            _id: '$referrerId',
+            totalReferrals: { $sum: 1 },
+            qualifiedReferrals: {
+              $sum: {
+                $cond: [{ $eq: ['$status', ReferralStatus.QUALIFIED] }, 1, 0],
+              },
+            },
+            pendingReferrals: {
+              $sum: {
+                $cond: [{ $eq: ['$status', ReferralStatus.PENDING] }, 1, 0],
+              },
+            },
+            paidEarningsKobo: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$rewardStatus', ReferralRewardStatus.PAID] },
+                  '$rewardAmountKobo',
+                  0,
+                ],
+              },
+            },
+            pendingEarningsKobo: {
+              $sum: {
+                $cond: [
+                  {
+                    $in: [
+                      '$rewardStatus',
+                      [
+                        ReferralRewardStatus.PENDING,
+                        ReferralRewardStatus.PROCESSING,
+                      ],
+                    ],
+                  },
+                  '$rewardAmountKobo',
+                  0,
+                ],
+              },
+            },
+            failedEarningsKobo: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$rewardStatus', ReferralRewardStatus.FAILED] },
+                  '$rewardAmountKobo',
+                  0,
+                ],
+              },
+            },
+            lastReferralAt: { $max: '$createdAt' },
+            lastRewardAt: { $max: '$rewardedAt' },
+          },
+        },
+        {
+          $lookup: {
+            from: 'users',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'user',
+          },
+        },
+        { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+        ...userSearchStage,
+        { $sort: { paidEarningsKobo: -1, qualifiedReferrals: -1 } },
+        {
+          $facet: {
+            data: [
+              { $skip: skip },
+              { $limit: limit },
+              {
+                $project: {
+                  _id: 0,
+                  userId: '$_id',
+                  fullName: { $ifNull: ['$user.fullName', 'Unknown user'] },
+                  email: { $ifNull: ['$user.email', ''] },
+                  phone: { $ifNull: ['$user.phone', ''] },
+                  referralCode: { $ifNull: ['$user.referralCode', ''] },
+                  totalReferrals: 1,
+                  qualifiedReferrals: 1,
+                  pendingReferrals: 1,
+                  paidEarningsKobo: 1,
+                  pendingEarningsKobo: 1,
+                  failedEarningsKobo: 1,
+                  lastReferralAt: 1,
+                  lastRewardAt: 1,
+                },
+              },
+            ],
+            count: [{ $count: 'total' }],
+          },
+        },
+      ]),
+      this.referralModel.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalReferrals: { $sum: 1 },
+            qualifiedReferrals: {
+              $sum: {
+                $cond: [{ $eq: ['$status', ReferralStatus.QUALIFIED] }, 1, 0],
+              },
+            },
+            paidRewards: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$rewardStatus', ReferralRewardStatus.PAID] },
+                  1,
+                  0,
+                ],
+              },
+            },
+            totalPaidKobo: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$rewardStatus', ReferralRewardStatus.PAID] },
+                  '$rewardAmountKobo',
+                  0,
+                ],
+              },
+            },
+            totalPendingKobo: {
+              $sum: {
+                $cond: [
+                  {
+                    $in: [
+                      '$rewardStatus',
+                      [
+                        ReferralRewardStatus.PENDING,
+                        ReferralRewardStatus.PROCESSING,
+                      ],
+                    ],
+                  },
+                  '$rewardAmountKobo',
+                  0,
+                ],
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    const result = earningsResult[0] || { data: [], count: [] };
+    const total = result.count[0]?.total || 0;
+    const summary = summaryRows[0] || {
+      totalReferrals: 0,
+      qualifiedReferrals: 0,
+      paidRewards: 0,
+      totalPaidKobo: 0,
+      totalPendingKobo: 0,
+    };
+
+    return {
+      summary,
+      ...paginate(result.data, total, page, limit),
+    };
+  }
 
   async getAdminStats() {
     const [

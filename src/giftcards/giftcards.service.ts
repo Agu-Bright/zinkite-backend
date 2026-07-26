@@ -619,6 +619,7 @@ export class GiftCardsService implements OnModuleInit {
       rate: rate.rate,
       amountNgn,
       rateId: (rate as any)._id.toString(),
+      notes: rate.notes || null,
     };
   }
 

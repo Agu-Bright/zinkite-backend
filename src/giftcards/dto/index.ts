@@ -508,6 +508,12 @@ export class CalculatedRateResponse {
 
   @ApiProperty({ description: 'Rate ID used' })
   rateId: string;
+
+  @ApiPropertyOptional({
+    description: 'Customer-facing note attached to the applicable rate',
+    nullable: true,
+  })
+  notes: string | null;
 }
 
 export class TradeResponse {

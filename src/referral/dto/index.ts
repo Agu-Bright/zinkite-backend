@@ -151,3 +151,12 @@ export class UpdateReferralSettingsDto {
   @Type(() => Number)
   minTransactionAmount: number;
 }
+
+export class AdminReferralEarningsQueryDto extends PaginationDto {
+  @ApiPropertyOptional({
+    description: 'Search referrers by name, email, phone, or referral code',
+  })
+  @IsOptional()
+  @IsString()
+  search?: string;
+}
