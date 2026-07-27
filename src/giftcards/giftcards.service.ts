@@ -1195,8 +1195,31 @@ export class GiftCardsService implements OnModuleInit {
         throw new NotFoundException('Trade not found');
       }
 
-      // Validate trade can be reviewed
-      if (trade.status !== TradeStatus.PENDING && trade.status !== TradeStatus.PROCESSING) {
+      // Standard complete-card trades may be decided immediately while
+      // pending, or optionally moved to processing first. Missing-digit
+      // trades keep their separate processing -> offer workflow.
+      if (trade.status === TradeStatus.PENDING) {
+        if (
+          trade.tradeType === TradeType.LOST_DIGITS &&
+          dto.status !== TradeStatus.PROCESSING
+        ) {
+          throw new BadRequestException(
+            'Missing-digit trades must be moved to processing before an offer or rejection',
+          );
+        }
+      } else if (trade.status === TradeStatus.PROCESSING) {
+        if (dto.status === TradeStatus.PROCESSING) {
+          throw new BadRequestException('Trade is already processing');
+        }
+        if (
+          trade.tradeType === TradeType.LOST_DIGITS &&
+          dto.status === TradeStatus.APPROVED
+        ) {
+          throw new BadRequestException(
+            'Missing-digit trades are approved only when the user accepts the admin offer',
+          );
+        }
+      } else {
         throw new BadRequestException('Trade has already been reviewed');
       }
 
