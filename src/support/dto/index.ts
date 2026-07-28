@@ -14,6 +14,7 @@ import {
   Min,
   Max,
   IsDateString,
+  IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -79,8 +80,20 @@ export class AdminTicketReplyDto extends TicketReplyDto {
 }
 
 export class UpdateTicketStatusDto {
-  @ApiProperty({ enum: TicketStatus })
-  @IsEnum(TicketStatus)
+  @ApiProperty({
+    enum: [
+      TicketStatus.OPEN,
+      TicketStatus.IN_PROGRESS,
+      TicketStatus.ESCALATED,
+      TicketStatus.CLOSED,
+    ],
+  })
+  @IsIn([
+    TicketStatus.OPEN,
+    TicketStatus.IN_PROGRESS,
+    TicketStatus.ESCALATED,
+    TicketStatus.CLOSED,
+  ])
   status: TicketStatus;
 }
 

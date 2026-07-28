@@ -112,7 +112,14 @@ export class SupportService {
   async getMyTickets(userId: string, query: MyTicketsQueryDto) {
     const { page = 1, limit = 20, status } = query;
     const filter: any = { userId: new Types.ObjectId(userId) };
-    if (status) filter.status = status;
+    if (status) {
+      // RESOLVED is a legacy state. Closed views include those historical
+      // tickets so the admin dashboard represents all completed disputes.
+      filter.status =
+        status === TicketStatus.CLOSED
+          ? { $in: [TicketStatus.CLOSED, TicketStatus.RESOLVED] }
+          : status;
+    }
 
     const [data, total] = await Promise.all([
       this.ticketModel
@@ -167,7 +174,10 @@ export class SupportService {
     if (ticket.userId.toString() !== userId) {
       throw new ForbiddenException('You do not have access to this ticket');
     }
-    if (ticket.status === TicketStatus.CLOSED) {
+    if (
+      ticket.status === TicketStatus.CLOSED ||
+      ticket.status === TicketStatus.RESOLVED
+    ) {
       throw new BadRequestException('Cannot reply to a closed ticket');
     }
 
@@ -180,12 +190,6 @@ export class SupportService {
       isInternal: false,
       createdAt: new Date(),
     } as any);
-
-    // Re-open if was resolved
-    if (ticket.status === TicketStatus.RESOLVED) {
-      ticket.status = TicketStatus.OPEN;
-      ticket.resolvedAt = null;
-    }
 
     await ticket.save();
     return this.stripInternalMessages(ticket);
@@ -222,7 +226,12 @@ export class SupportService {
 
     // Apply query filters (override role filter if admin has specific role filter)
     if (category) filter.category = category;
-    if (status) filter.status = status;
+    if (status) {
+      filter.status =
+        status === TicketStatus.CLOSED
+          ? { $in: [TicketStatus.CLOSED, TicketStatus.RESOLVED] }
+          : status;
+    }
     if (priority) filter.priority = priority;
     if (assignedRole) filter.assignedRole = assignedRole;
 
@@ -327,11 +336,8 @@ export class SupportService {
 
     ticket.status = dto.status;
 
-    if (dto.status === TicketStatus.RESOLVED) {
-      ticket.resolvedAt = new Date();
-    } else if (dto.status === TicketStatus.CLOSED) {
+    if (dto.status === TicketStatus.CLOSED) {
       ticket.closedAt = new Date();
-      if (!ticket.resolvedAt) ticket.resolvedAt = new Date();
     }
 
     await ticket.save();
@@ -380,6 +386,10 @@ export class SupportService {
 
     const byStatus: Record<string, number> = {};
     for (const s of statusCounts) byStatus[s._id] = s.count;
+    byStatus[TicketStatus.CLOSED] =
+      (byStatus[TicketStatus.CLOSED] || 0) +
+      (byStatus[TicketStatus.RESOLVED] || 0);
+    delete byStatus[TicketStatus.RESOLVED];
 
     const byPriority: Record<string, number> = {};
     for (const p of priorityCounts) byPriority[p._id] = p.count;
