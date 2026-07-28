@@ -27,6 +27,9 @@ export class AdminRole {
   @Prop({ default: true })
   isActive: boolean;
 
+  @Prop({ default: false, index: true })
+  isDeleted: boolean;
+
   createdAt: Date;
   updatedAt: Date;
 }

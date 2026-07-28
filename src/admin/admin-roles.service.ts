@@ -43,14 +43,19 @@ export class AdminRolesService {
    * List all roles
    */
   async findAll(): Promise<AdminRoleDocument[]> {
-    return this.adminRoleModel.find().sort({ isSystem: -1, name: 1 });
+    return this.adminRoleModel
+      .find({ isDeleted: { $ne: true } })
+      .sort({ isSystem: -1, name: 1 });
   }
 
   /**
    * Get role by ID
    */
   async findById(id: string): Promise<AdminRoleDocument> {
-    const role = await this.adminRoleModel.findById(id);
+    const role = await this.adminRoleModel.findOne({
+      _id: id,
+      isDeleted: { $ne: true },
+    });
     if (!role) {
       throw new NotFoundException('Role not found');
     }
@@ -137,16 +142,19 @@ export class AdminRolesService {
   }
 
   /**
-   * Delete custom role (cannot delete system roles)
+   * Delete an unused role. Super Admin is permanently protected.
    */
   async delete(id: string): Promise<void> {
-    const role = await this.adminRoleModel.findById(id);
+    const role = await this.adminRoleModel.findOne({
+      _id: id,
+      isDeleted: { $ne: true },
+    });
     if (!role) {
       throw new NotFoundException('Role not found');
     }
 
-    if (role.isSystem) {
-      throw new BadRequestException('Cannot delete system roles');
+    if (role.slug === 'super-admin') {
+      throw new BadRequestException('The Super Admin role cannot be deleted');
     }
 
     // Check if any admins are assigned
@@ -157,7 +165,9 @@ export class AdminRolesService {
       );
     }
 
-    await this.adminRoleModel.findByIdAndDelete(id);
+    role.isDeleted = true;
+    role.isActive = false;
+    await role.save();
     this.logger.log(`Role deleted: ${role.name}`);
   }
 

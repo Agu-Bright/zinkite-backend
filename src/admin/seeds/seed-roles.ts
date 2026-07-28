@@ -48,6 +48,7 @@ const SYSTEM_ROLES = [
       'dashboard.view',
       'users.view',
       'giftcards.trades.view', 'giftcards.trades.approve', 'giftcards.trades.reject', 'giftcards.trades.escalate',
+      'giftcards.lost-digits.view', 'giftcards.lost-digits.manage',
       'giftcards.brands.view', 'giftcards.brands.manage',
       'giftcards.rates.view', 'giftcards.rates.manage',
       'giftcard-buy.view', 'giftcard-buy.manage', 'giftcard-buy.sync', 'giftcard-buy.refund', 'giftcard-buy.stats',
