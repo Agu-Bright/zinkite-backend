@@ -56,9 +56,12 @@ export const PERMISSIONS = {
   GIFTCARDS_TRADES_APPROVE: 'giftcards.trades.approve',
   GIFTCARDS_TRADES_REJECT: 'giftcards.trades.reject',
   GIFTCARDS_TRADES_ESCALATE: 'giftcards.trades.escalate',
+  GIFTCARDS_LOST_DIGITS_VIEW: 'giftcards.lost-digits.view',
+  GIFTCARDS_LOST_DIGITS_MANAGE: 'giftcards.lost-digits.manage',
   GIFTCARDS_BRANDS_VIEW: 'giftcards.brands.view',
   GIFTCARDS_BRANDS_MANAGE: 'giftcards.brands.manage',
   GIFTCARDS_RATES_VIEW: 'giftcards.rates.view',
+  GIFTCARDS_RATES_UPDATE: 'giftcards.rates.update',
   GIFTCARDS_RATES_MANAGE: 'giftcards.rates.manage',
 
   // Crypto

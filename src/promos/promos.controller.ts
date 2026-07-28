@@ -26,6 +26,8 @@ import { CreatePromoBannerDto, UpdatePromoBannerDto, PromoBannerQueryDto } from 
 import { Public, Roles } from '../common/decorators';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { PermissionsGuard } from '../admin/guards/permissions.guard';
+import { RequirePermissions } from '../admin/decorators/require-permissions.decorator';
 
 /**
  * Public controller — no auth required.
@@ -51,18 +53,20 @@ export class PromosController {
 @ApiTags('Admin - Promos')
 @ApiBearerAuth('JWT-auth')
 @Controller('admin/promos')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('ADMIN')
 export class AdminPromosController {
   constructor(private readonly promosService: PromosService) {}
 
   @Get('banners')
+  @RequirePermissions('promos.manage')
   @ApiOperation({ summary: 'List all promo banners (admin)' })
   async getBanners(@Query() query: PromoBannerQueryDto) {
     return this.promosService.getBanners(query);
   }
 
   @Post('banners')
+  @RequirePermissions('promos.manage')
   @ApiOperation({ summary: 'Create a promo banner' })
   async createBanner(@Body() dto: CreatePromoBannerDto) {
     const banner = await this.promosService.createBanner(dto);
@@ -70,6 +74,7 @@ export class AdminPromosController {
   }
 
   @Put('banners/:id')
+  @RequirePermissions('promos.manage')
   @ApiOperation({ summary: 'Update a promo banner' })
   @ApiParam({ name: 'id' })
   async updateBanner(
@@ -81,6 +86,7 @@ export class AdminPromosController {
   }
 
   @Delete('banners/:id')
+  @RequirePermissions('promos.manage')
   @ApiOperation({ summary: 'Delete a promo banner' })
   @ApiParam({ name: 'id' })
   async deleteBanner(@Param('id') id: string) {

@@ -16,6 +16,7 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  ForbiddenException,
 } from "@nestjs/common";
 import { Types } from "mongoose";
 
@@ -63,6 +64,10 @@ import {
   TradeQueryDto,
   MakeOfferDto,
 } from "../giftcards/dto";
+import {
+  TradeStatus,
+  TradeType,
+} from "../giftcards/schemas/gift-card-trade.schema";
 import { TransactionsQueryDto } from "../wallet/dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../common/guards/roles.guard";
@@ -70,11 +75,14 @@ import { CurrentUser, Roles } from "../common/decorators";
 import { JwtPayload } from "../auth/strategies/jwt.strategy";
 import { ProviderHealthService } from "./provider-health.service";
 import { PermissionsGuard } from "./guards/permissions.guard";
-import { RequirePermissions } from "./decorators/require-permissions.decorator";
+import {
+  RequireAnyPermission,
+  RequirePermissions,
+} from "./decorators/require-permissions.decorator";
 
 @ApiTags("Admin")
 @Controller("admin")
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles("ADMIN")
 @ApiBearerAuth("JWT-auth")
 export class AdminController {
@@ -90,6 +98,7 @@ export class AdminController {
   // ============================================
 
   @Get("dashboard/stats")
+  @RequirePermissions("dashboard.view")
   @ApiOperation({ summary: "Get admin dashboard statistics" })
   @ApiResponse({
     status: 200,
@@ -101,6 +110,7 @@ export class AdminController {
   }
 
   @Get("dashboard/recent")
+  @RequirePermissions("dashboard.view")
   @ApiOperation({ summary: "Get recent activity for dashboard" })
   @ApiResponse({
     status: 200,
@@ -115,6 +125,7 @@ export class AdminController {
   // ============================================
 
   @Get("users")
+  @RequirePermissions("users.view")
   @ApiOperation({ summary: "Get all users with filters" })
   @ApiResponse({ status: 200, description: "Paginated list of users" })
   async getUsers(@Query() query: UsersQueryDto) {
@@ -122,6 +133,7 @@ export class AdminController {
   }
 
   @Get("users/:id")
+  @RequirePermissions("users.view")
   @ApiOperation({ summary: "Get user details by ID" })
   @ApiParam({ name: "id", description: "User ID" })
   @ApiResponse({
@@ -135,6 +147,7 @@ export class AdminController {
   }
 
   @Patch("users/:id/status")
+  @RequireAnyPermission("users.suspend", "users.ban")
   @ApiOperation({ summary: "Update user status (suspend/reactivate)" })
   @ApiParam({ name: "id", description: "User ID" })
   @ApiResponse({ status: 200, description: "User status updated" })
@@ -149,6 +162,7 @@ export class AdminController {
   }
 
   @Get("users/:id/transactions")
+  @RequireAnyPermission("users.view", "transactions.view")
   @ApiOperation({ summary: "Get wallet transactions for a specific user" })
   @ApiParam({ name: "id", description: "User ID" })
   @ApiResponse({ status: 200, description: "Paginated wallet transactions" })
@@ -160,11 +174,25 @@ export class AdminController {
     return this.adminService.getUserWalletTransactions(id, query);
   }
 
+  @Get("users/:id/trades")
+  @RequirePermissions("users.view")
+  @ApiOperation({ summary: "Get gift card trades for a specific user" })
+  @ApiParam({ name: "id", description: "User ID" })
+  @ApiResponse({ status: 200, description: "Paginated gift card trades" })
+  async getUserTrades(
+    @Param("id") id: string,
+    @Query() query: TradeQueryDto,
+  ) {
+    validateObjectId(id, "user id");
+    return this.adminService.getTrades({ ...query, userId: id });
+  }
+
   // ============================================
   // WALLET MANAGEMENT
   // ============================================
 
   @Get("wallet/transactions")
+  @RequirePermissions("transactions.view")
   @ApiOperation({ summary: "Get all wallet transactions" })
   @ApiResponse({ status: 200, description: "Paginated wallet transactions" })
   async getWalletTransactions(@Query() query: TransactionsQueryDto) {
@@ -172,6 +200,7 @@ export class AdminController {
   }
 
   @Get("wallet/transactions/:id")
+  @RequirePermissions("transactions.view")
   @ApiOperation({ summary: "Get single wallet transaction details" })
   @ApiParam({ name: "id", description: "Transaction ID" })
   @ApiResponse({ status: 200, description: "Wallet transaction details" })
@@ -201,6 +230,7 @@ export class AdminController {
   }
 
   @Post("wallet/adjustment")
+  @RequireAnyPermission("wallet.credit", "wallet.debit")
   @ApiOperation({ summary: "Manual wallet credit/debit adjustment" })
   @ApiResponse({ status: 201, description: "Adjustment completed" })
   @ApiResponse({ status: 404, description: "User not found" })
@@ -216,6 +246,11 @@ export class AdminController {
   // ============================================
 
   @Get("giftcards/brands")
+  @RequireAnyPermission(
+    "giftcards.brands.view",
+    "giftcards.rates.update",
+    "giftcards.rates.manage",
+  )
   @ApiOperation({ summary: "Get all brands (admin view)" })
   @ApiResponse({ status: 200, description: "Paginated list of brands" })
   async getBrands(@Query() query: BrandQueryDto) {
@@ -223,6 +258,7 @@ export class AdminController {
   }
 
   @Post("giftcards/brands")
+  @RequirePermissions("giftcards.brands.manage")
   @ApiOperation({ summary: "Create a new brand" })
   @ApiResponse({ status: 201, description: "Brand created" })
   @ApiResponse({ status: 409, description: "Brand already exists" })
@@ -231,6 +267,7 @@ export class AdminController {
   }
 
   @Put("giftcards/brands/:id")
+  @RequirePermissions("giftcards.brands.manage")
   @ApiOperation({ summary: "Update a brand" })
   @ApiParam({ name: "id", description: "Brand ID" })
   @ApiResponse({ status: 200, description: "Brand updated" })
@@ -240,6 +277,7 @@ export class AdminController {
   }
 
   @Delete("giftcards/brands/:id")
+  @RequirePermissions("giftcards.brands.manage")
   @ApiOperation({ summary: "Delete a brand (soft-delete)" })
   @ApiParam({ name: "id", description: "Brand ID" })
   @ApiResponse({ status: 200, description: "Brand deleted" })
@@ -253,6 +291,11 @@ export class AdminController {
   // ============================================
 
   @Get("giftcards/categories")
+  @RequireAnyPermission(
+    "giftcards.brands.view",
+    "giftcards.rates.update",
+    "giftcards.rates.manage",
+  )
   @ApiOperation({ summary: "Get all categories (admin view)" })
   @ApiResponse({ status: 200, description: "Paginated list of categories" })
   async getCategories(@Query() query: CategoryQueryDto) {
@@ -260,6 +303,7 @@ export class AdminController {
   }
 
   @Post("giftcards/categories")
+  @RequirePermissions("giftcards.brands.manage")
   @ApiOperation({ summary: "Create a new category" })
   @ApiResponse({ status: 201, description: "Category created" })
   @ApiResponse({ status: 404, description: "Brand not found" })
@@ -269,6 +313,7 @@ export class AdminController {
   }
 
   @Put("giftcards/categories/:id")
+  @RequirePermissions("giftcards.brands.manage")
   @ApiOperation({ summary: "Update a category" })
   @ApiParam({ name: "id", description: "Category ID" })
   @ApiResponse({ status: 200, description: "Category updated" })
@@ -281,6 +326,7 @@ export class AdminController {
   }
 
   @Delete("giftcards/categories/:id")
+  @RequirePermissions("giftcards.brands.manage")
   @ApiOperation({ summary: "Delete a category (soft-delete)" })
   @ApiParam({ name: "id", description: "Category ID" })
   @ApiResponse({ status: 200, description: "Category deleted" })
@@ -294,6 +340,11 @@ export class AdminController {
   // ============================================
 
   @Get("giftcards/rates")
+  @RequireAnyPermission(
+    "giftcards.rates.view",
+    "giftcards.rates.update",
+    "giftcards.rates.manage",
+  )
   @ApiOperation({ summary: "Get all rates (admin view)" })
   @ApiResponse({ status: 200, description: "Paginated list of rates" })
   async getRates(@Query() query: RateQueryDto) {
@@ -301,6 +352,7 @@ export class AdminController {
   }
 
   @Post("giftcards/rates")
+  @RequirePermissions("giftcards.rates.manage")
   @ApiOperation({ summary: "Create a new rate" })
   @ApiResponse({ status: 201, description: "Rate created" })
   @ApiResponse({ status: 404, description: "Category not found" })
@@ -310,6 +362,7 @@ export class AdminController {
   }
 
   @Put("giftcards/rates/:id")
+  @RequireAnyPermission("giftcards.rates.update", "giftcards.rates.manage")
   @ApiOperation({ summary: "Update a rate" })
   @ApiParam({ name: "id", description: "Rate ID" })
   @ApiResponse({ status: 200, description: "Rate updated" })
@@ -319,6 +372,7 @@ export class AdminController {
   }
 
   @Delete("giftcards/rates/:id")
+  @RequirePermissions("giftcards.rates.manage")
   @ApiOperation({ summary: "Delete a rate (soft-delete)" })
   @ApiParam({ name: "id", description: "Rate ID" })
   @ApiResponse({ status: 200, description: "Rate deleted" })
@@ -332,13 +386,26 @@ export class AdminController {
   // ============================================
 
   @Get("giftcards/trades")
+  @RequireAnyPermission(
+    "giftcards.trades.view",
+    "giftcards.lost-digits.view",
+    "giftcards.lost-digits.manage",
+  )
   @ApiOperation({ summary: "Get all trades (admin view)" })
   @ApiResponse({ status: 200, description: "Paginated list of trades" })
-  async getTrades(@Query() query: TradeQueryDto) {
-    return this.adminService.getTrades(query);
+  async getTrades(
+    @Query() query: TradeQueryDto,
+    @CurrentUser() admin: JwtPayload,
+  ) {
+    const permissions = admin.permissions || [];
+    const hasAllTrades = permissions.includes("giftcards.trades.view");
+    return this.adminService.getTrades(
+      hasAllTrades ? query : { ...query, tradeType: TradeType.LOST_DIGITS },
+    );
   }
 
   @Get("giftcards/trades/stats")
+  @RequirePermissions("giftcards.trades.view")
   @ApiOperation({ summary: "Get trade statistics" })
   @ApiResponse({ status: 200, description: "Trade statistics" })
   async getTradeStats() {
@@ -346,15 +413,35 @@ export class AdminController {
   }
 
   @Get("giftcards/trades/:id")
+  @RequireAnyPermission(
+    "giftcards.trades.view",
+    "giftcards.lost-digits.view",
+    "giftcards.lost-digits.manage",
+  )
   @ApiOperation({ summary: "Get trade details by ID" })
   @ApiParam({ name: "id", description: "Trade ID" })
   @ApiResponse({ status: 200, description: "Trade details" })
   @ApiResponse({ status: 404, description: "Trade not found" })
-  async getTradeById(@Param("id") id: string) {
-    return this.adminService.getTradeById(id);
+  async getTradeById(
+    @Param("id") id: string,
+    @CurrentUser() admin: JwtPayload,
+  ) {
+    const trade = await this.adminService.getTradeById(id);
+    if (
+      !(admin.permissions || []).includes("giftcards.trades.view") &&
+      trade.tradeType !== TradeType.LOST_DIGITS
+    ) {
+      throw new ForbiddenException("You can only access missing-code trades");
+    }
+    return trade;
   }
 
   @Post("giftcards/trades/:id/review")
+  @RequireAnyPermission(
+    "giftcards.trades.approve",
+    "giftcards.trades.reject",
+    "giftcards.lost-digits.manage",
+  )
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Review/approve/reject a trade" })
   @ApiParam({ name: "id", description: "Trade ID" })
@@ -366,10 +453,28 @@ export class AdminController {
     @CurrentUser() admin: JwtPayload,
     @Body() dto: ReviewTradeDto,
   ) {
+    const trade = await this.adminService.getTradeById(id);
+    const permissions = admin.permissions || [];
+    if (trade.tradeType === TradeType.LOST_DIGITS) {
+      if (!permissions.includes("giftcards.lost-digits.manage")) {
+        throw new ForbiddenException("Missing-code trade permission required");
+      }
+    } else if (
+      dto.status === TradeStatus.APPROVED &&
+      !permissions.includes("giftcards.trades.approve")
+    ) {
+      throw new ForbiddenException("Trade approval permission required");
+    } else if (
+      dto.status === TradeStatus.REJECTED &&
+      !permissions.includes("giftcards.trades.reject")
+    ) {
+      throw new ForbiddenException("Trade rejection permission required");
+    }
     return this.adminService.reviewTrade(id, admin.sub, dto);
   }
 
   @Patch("giftcards/trades/:id/offer")
+  @RequirePermissions("giftcards.lost-digits.manage")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: "Make an offer on a LOST_DIGITS trade (admin proposes payout)",
@@ -391,6 +496,7 @@ export class AdminController {
   // ============================================
 
   @Get("paystack/transactions")
+  @RequirePermissions("topups.view")
   @ApiOperation({ summary: "Get Paystack transactions" })
   @ApiResponse({ status: 200, description: "Paginated Paystack transactions" })
   async getPaystackTransactions(@Query() query: PaystackQueryDto) {
@@ -398,6 +504,7 @@ export class AdminController {
   }
 
   @Get("paystack/transactions/:id")
+  @RequirePermissions("topups.view")
   @ApiOperation({ summary: "Get single Paystack transaction" })
   @ApiParam({ name: "id", description: "Transaction ID" })
   @ApiResponse({ status: 200, description: "Paystack transaction details" })
@@ -411,6 +518,7 @@ export class AdminController {
   // ============================================
 
   @Get("korapay/transactions")
+  @RequirePermissions("topups.view")
   @ApiOperation({ summary: "Get Kora Pay transactions" })
   @ApiResponse({ status: 200, description: "Paginated Kora transactions" })
   async getKorapayTransactions(@Query() query: PaystackQueryDto) {
@@ -418,6 +526,7 @@ export class AdminController {
   }
 
   @Get("korapay/transactions/:id")
+  @RequirePermissions("topups.view")
   @ApiOperation({ summary: "Get single Kora Pay transaction" })
   @ApiParam({ name: "id", description: "Transaction ID" })
   @ApiResponse({ status: 200, description: "Kora transaction details" })
@@ -431,6 +540,7 @@ export class AdminController {
   // ============================================
 
   @Get("settings")
+  @RequirePermissions("settings.view")
   @ApiOperation({ summary: "Get all app settings with metadata" })
   @ApiResponse({ status: 200, description: "All settings with full metadata" })
   async getAllSettings() {
@@ -438,6 +548,7 @@ export class AdminController {
   }
 
   @Patch("settings")
+  @RequirePermissions("settings.manage")
   @ApiOperation({ summary: "Bulk update app settings" })
   @ApiResponse({ status: 200, description: "Settings updated" })
   async bulkUpdateSettings(@Body() dto: BulkUpdateSettingsDto) {
@@ -449,6 +560,7 @@ export class AdminController {
   // ============================================
 
   @Get("provider-health")
+  @RequirePermissions("provider-health.view")
   @ApiOperation({ summary: "Get provider health status" })
   @ApiResponse({ status: 200, description: "Provider health data" })
   async getProviderHealth() {
@@ -461,6 +573,7 @@ export class AdminController {
   // ============================================
 
   @Get("withdrawals")
+  @RequirePermissions("withdrawals.view")
   @ApiOperation({ summary: "List all withdrawals (admin view)" })
   @ApiResponse({ status: 200, description: "Paginated withdrawals list" })
   async getWithdrawals(@Query() query: WithdrawalsQueryDto) {
@@ -468,6 +581,7 @@ export class AdminController {
   }
 
   @Post("withdrawals/:id/approve")
+  @RequirePermissions("wallet.debit")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -488,6 +602,7 @@ export class AdminController {
   }
 
   @Post("withdrawals/:id/reject")
+  @RequirePermissions("wallet.debit")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -509,6 +624,7 @@ export class AdminController {
    * the frontend is rolling out approve/reject. Delegates internally.
    */
   @Patch("withdrawals/:id/status")
+  @RequirePermissions("wallet.debit")
   @ApiOperation({
     summary: "[Deprecated] Delegates to approve/reject. Use those instead.",
   })
@@ -527,6 +643,7 @@ export class AdminController {
   // ============================================
 
   @Get("wallet/credit-requests")
+  @RequirePermissions("wallet.credit")
   @ApiOperation({ summary: "List credit requests" })
   @ApiResponse({ status: 200, description: "Paginated credit requests" })
   async getCreditRequests(@Query() query: CreditRequestsQueryDto) {
@@ -534,6 +651,7 @@ export class AdminController {
   }
 
   @Post("wallet/credit-requests")
+  @RequirePermissions("wallet.credit")
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: "Create a new wallet credit request" })
   @ApiResponse({ status: 201, description: "Credit request created" })
@@ -546,6 +664,7 @@ export class AdminController {
   }
 
   @Post("wallet/credit-requests/:id/approve")
+  @RequirePermissions("wallet.credit")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Approve a credit request — credits user wallet" })
   @ApiParam({ name: "id", description: "Credit Request ID" })
@@ -560,6 +679,7 @@ export class AdminController {
   }
 
   @Post("wallet/credit-requests/:id/deny")
+  @RequirePermissions("wallet.credit")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Deny a credit request" })
   @ApiParam({ name: "id", description: "Credit Request ID" })
@@ -579,6 +699,7 @@ export class AdminController {
   // ============================================
 
   @Post("notifications/send")
+  @RequirePermissions("notifications.manage")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Send a notification to users" })
   @ApiResponse({ status: 200, description: "Notification sent" })
@@ -590,6 +711,7 @@ export class AdminController {
   }
 
   @Get("notifications/history")
+  @RequirePermissions("notifications.view")
   @ApiOperation({ summary: "Get notification send history" })
   @ApiResponse({ status: 200, description: "Paginated notification logs" })
   async getNotificationHistory(@Query() query: NotificationsQueryDto) {

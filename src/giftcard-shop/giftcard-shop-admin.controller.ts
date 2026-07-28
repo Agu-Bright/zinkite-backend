@@ -33,10 +33,15 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CurrentUser, Roles } from '../common/decorators';
 import { JwtPayload } from '../auth/strategies/jwt.strategy';
+import { PermissionsGuard } from '../admin/guards/permissions.guard';
+import {
+  RequireAnyPermission,
+  RequirePermissions,
+} from '../admin/decorators/require-permissions.decorator';
 
 @ApiTags('Admin - Gift Card Shop')
 @Controller('admin/giftcard-shop')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('ADMIN')
 @ApiBearerAuth('JWT-auth')
 export class GiftCardShopAdminController {
@@ -47,6 +52,7 @@ export class GiftCardShopAdminController {
   // ============================================
 
   @Get('products')
+  @RequirePermissions('giftcard-buy.view')
   @ApiOperation({ summary: 'List all shop products (admin)' })
   @ApiResponse({ status: 200, description: 'Paginated product list' })
   async getProducts(@Query() query: ShopProductQueryDto) {
@@ -54,6 +60,7 @@ export class GiftCardShopAdminController {
   }
 
   @Post('products')
+  @RequirePermissions('giftcard-buy.manage')
   @ApiOperation({ summary: 'Create a new shop product' })
   @ApiResponse({ status: 201, description: 'Product created' })
   async createProduct(@Body() dto: CreateShopProductDto) {
@@ -61,6 +68,7 @@ export class GiftCardShopAdminController {
   }
 
   @Get('products/:id')
+  @RequirePermissions('giftcard-buy.view')
   @ApiOperation({ summary: 'Get shop product details (admin)' })
   @ApiParam({ name: 'id', description: 'Product ID' })
   @ApiResponse({ status: 200, description: 'Product details' })
@@ -69,6 +77,7 @@ export class GiftCardShopAdminController {
   }
 
   @Put('products/:id')
+  @RequirePermissions('giftcard-buy.manage')
   @ApiOperation({ summary: 'Update a shop product' })
   @ApiParam({ name: 'id', description: 'Product ID' })
   @ApiResponse({ status: 200, description: 'Product updated' })
@@ -80,6 +89,7 @@ export class GiftCardShopAdminController {
   }
 
   @Post('products/:id/codes')
+  @RequirePermissions('giftcard-buy.manage')
   @ApiOperation({ summary: 'Add gift card codes to a product' })
   @ApiParam({ name: 'id', description: 'Product ID' })
   @ApiResponse({ status: 201, description: 'Codes added' })
@@ -95,6 +105,7 @@ export class GiftCardShopAdminController {
   // ============================================
 
   @Get('purchases')
+  @RequirePermissions('giftcard-buy.view')
   @ApiOperation({ summary: 'List all shop purchases (admin)' })
   @ApiResponse({ status: 200, description: 'Paginated purchase list' })
   async getPurchases(@Query() query: ShopPurchaseQueryDto) {
@@ -102,6 +113,7 @@ export class GiftCardShopAdminController {
   }
 
   @Get('purchases/:id')
+  @RequirePermissions('giftcard-buy.view')
   @ApiOperation({ summary: 'Get shop purchase details (admin)' })
   @ApiParam({ name: 'id', description: 'Purchase ID' })
   @ApiResponse({ status: 200, description: 'Purchase details' })
@@ -110,6 +122,7 @@ export class GiftCardShopAdminController {
   }
 
   @Post('purchases/:id/refund')
+  @RequirePermissions('giftcard-buy.refund')
   @ApiOperation({ summary: 'Refund a shop purchase' })
   @ApiParam({ name: 'id', description: 'Purchase ID' })
   @ApiResponse({ status: 200, description: 'Purchase refunded' })
@@ -126,6 +139,7 @@ export class GiftCardShopAdminController {
   // ============================================
 
   @Get('stats')
+  @RequireAnyPermission('giftcard-buy.stats', 'giftcard-buy.view')
   @ApiOperation({ summary: 'Get shop sales statistics' })
   @ApiResponse({ status: 200, description: 'Shop statistics' })
   async getStats() {
