@@ -7,15 +7,17 @@
 import {
   Controller,
   Get,
+  Patch,
+  Body,
   Param,
   Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { ReferralService } from './referral.service';
-import { MyReferralsQueryDto } from './dto';
+import { MyReferralsQueryDto, UpdateMyReferralCodeDto } from './dto';
 
 @ApiTags('Referral')
 @ApiBearerAuth('JWT-auth')
@@ -84,6 +86,17 @@ export class ReferralController {
     const userId = req.user.userId || req.user.sub;
     const referralCode =
       await this.referralService.getOrCreateUserReferralCode(userId);
+    return { referralCode };
+  }
+
+  @Patch('my-code')
+  @ApiOperation({ summary: "Update the current user's unique referral code" })
+  async updateMyCode(@Req() req: any, @Body() dto: UpdateMyReferralCodeDto) {
+    const userId = req.user.userId || req.user.sub;
+    const referralCode = await this.referralService.updateUserReferralCode(
+      userId,
+      dto.referralCode,
+    );
     return { referralCode };
   }
 

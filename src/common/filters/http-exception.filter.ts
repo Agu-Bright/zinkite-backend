@@ -66,6 +66,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
       );
     }
 
+    if (statusCode === HttpStatus.TOO_MANY_REQUESTS) {
+      message = 'Too many requests. Please wait a moment and try again.';
+      error = 'Too Many Requests';
+    }
+
     const errorResponse: ErrorResponse = {
       success: false,
       statusCode,

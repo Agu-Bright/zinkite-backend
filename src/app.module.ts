@@ -6,9 +6,10 @@ import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { LoggerMiddleware } from './common/middleware/logger.middleware';
+import { IdentityThrottlerGuard } from './common/guards/identity-throttler.guard';
 
 // Feature Modules
 import { CommonModule } from './common/common.module';
@@ -113,7 +114,7 @@ import { AppController } from './app.controller';
     // Loosen per-route with @Throttle({ short: { limit: N, ttl: N } }).
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: IdentityThrottlerGuard,
     },
   ],
 })

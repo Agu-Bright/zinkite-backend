@@ -11,6 +11,7 @@ import {
   Injectable,
   Logger,
   BadRequestException,
+  ConflictException,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
@@ -92,6 +93,34 @@ export class ReferralService {
     throw new BadRequestException(
       'Could not generate a referral code. Please try again.',
     );
+  }
+
+  async updateUserReferralCode(
+    userId: string,
+    requestedCode: string,
+  ): Promise<string> {
+    const referralCode = requestedCode.trim().toUpperCase();
+    const user = await this.usersService.findById(userId);
+    if (!user) throw new NotFoundException('User not found');
+
+    if (user.referralCode === referralCode) return referralCode;
+
+    const owner = await this.usersService.findByReferralCode(referralCode);
+    if (owner && owner._id.toString() !== userId) {
+      throw new ConflictException('This referral code is already taken');
+    }
+
+    try {
+      const updated = await this.usersService.update(userId, { referralCode });
+      return updated.referralCode!;
+    } catch (error: any) {
+      // The unique database index protects against two users claiming the
+      // same code between the availability check and the update.
+      if (error?.code === 11000) {
+        throw new ConflictException('This referral code is already taken');
+      }
+      throw error;
+    }
   }
 
   async getReferralSettings() {

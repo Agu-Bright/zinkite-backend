@@ -12,6 +12,7 @@ import {
   Min,
   MinLength,
   MaxLength,
+  Matches,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { PaginationDto } from '../../common/dto/pagination.dto';
@@ -136,6 +137,21 @@ export class MyReferralsQueryDto extends PaginationDto {
   @IsOptional()
   @IsMongoId()
   challengeId?: string;
+}
+
+export class UpdateMyReferralCodeDto {
+  @ApiProperty({
+    description: 'Unique custom referral code (4-20 letters, numbers, hyphens, or underscores)',
+    example: 'JOHN-DEALS',
+  })
+  @Transform(({ value }) => String(value ?? '').trim().toUpperCase())
+  @IsString()
+  @MinLength(4)
+  @MaxLength(20)
+  @Matches(/^[A-Z0-9][A-Z0-9_-]*$/, {
+    message: 'Referral code must start with a letter or number and contain only letters, numbers, hyphens, or underscores',
+  })
+  referralCode: string;
 }
 
 export class UpdateReferralSettingsDto {
