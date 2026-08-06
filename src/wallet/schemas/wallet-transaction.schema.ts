@@ -19,6 +19,8 @@ export enum TransactionCategory {
   GIFTCARD = "GIFTCARD",
   AIRTIME = "AIRTIME",
   DATA = "DATA",
+  ELECTRICITY = "ELECTRICITY",
+  TV = "TV",
   TOPUP = "TOPUP",
   WITHDRAWAL = "WITHDRAWAL",
   MANUAL = "MANUAL",
@@ -40,6 +42,7 @@ export enum TransactionSource {
   GIFTCARD_SHOP = "GIFTCARD_SHOP",
   TASK_REWARD = "TASK_REWARD",
   REFERRAL_REWARD = "REFERRAL_REWARD",
+  VTU_VTPASS = "VTU_VTPASS",
 }
 
 export enum TransactionStatus {

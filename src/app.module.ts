@@ -33,6 +33,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { SupportModule } from './support/support.module';
 import { GiftCardShopModule } from './giftcard-shop/giftcard-shop.module';
 import { UserTaskModule } from './user-tasks/user-task.module';
+import { VtuModule } from './vtu/vtu.module';
 
 // App Controller
 import { AppController } from './app.controller';
@@ -95,6 +96,7 @@ import { AppController } from './app.controller';
     PromosModule,
     ReferralModule,
     UserTaskModule,
+    VtuModule,
 
     SettingsModule,
     NotificationsModule,

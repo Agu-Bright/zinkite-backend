@@ -127,6 +127,20 @@ export class WalletService {
     return this._referralService;
   }
 
+  async checkReferralQualification(
+    userId: string,
+    amountKobo: number,
+    transactionId?: Types.ObjectId,
+  ): Promise<void> {
+    const referralService = this.getReferralService();
+    if (!referralService) return;
+    await referralService.checkAndQualifyReferral(
+      userId,
+      amountKobo,
+      transactionId,
+    );
+  }
+
   /**
    * Create a wallet for a user
    */
@@ -339,15 +353,21 @@ export class WalletService {
         `Wallet debited: ${params.userId}, amount: ${params.amount}, ref: ${reference}`,
       );
 
-      // Async referral qualification check (non-blocking)
-      const referralSvc = this.getReferralService();
-      if (referralSvc) {
-        referralSvc
-          .checkAndQualifyReferral(
-            params.userId.toString(),
-            params.amount,
-            savedTxn._id,
-          )
+      // Only committed customer purchases qualify. Manual adjustments must
+      // never trigger rewards; session-owning callers qualify post-commit.
+      const qualifyingCategories = [
+        TransactionCategory.GIFTCARD_BUY,
+        TransactionCategory.AIRTIME,
+        TransactionCategory.DATA,
+        TransactionCategory.ELECTRICITY,
+        TransactionCategory.TV,
+      ];
+      if (shouldCommit && qualifyingCategories.includes(params.category)) {
+        this.checkReferralQualification(
+          params.userId.toString(),
+          params.amount,
+          savedTxn._id,
+        )
           .catch((err: any) =>
             this.logger.debug(`Referral check skipped: ${err.message}`),
           );

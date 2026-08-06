@@ -591,6 +591,16 @@ export class GiftCardBuyService {
       order.status = BuyOrderStatus.SUCCESS;
       await order.save();
 
+      await this.walletService
+        .checkReferralQualification(
+          userId,
+          totalChargedKobo,
+          order.walletTransactionId as Types.ObjectId,
+        )
+        .catch((err: any) =>
+          this.logger.warn(`Referral qualification failed: ${err.message}`),
+        );
+
       this.logger.log(`Gift card purchased: ${reference} — ${product.brandName} $${dto.unitPrice}`);
       return order;
     } catch (error: any) {

@@ -955,6 +955,18 @@ export class GiftCardsService implements OnModuleInit {
       await trade.save({ session });
       await session.commitTransaction();
 
+      if (dto.accept) {
+        await this.walletService
+          .checkReferralQualification(
+            userId,
+            trade.offerAmount || 0,
+            trade.walletTransactionId as Types.ObjectId,
+          )
+          .catch((err: any) =>
+            this.logger.warn(`Referral qualification failed: ${err.message}`),
+          );
+      }
+
       const populated = await this.tradeModel
         .findById(trade._id)
         .populate('brandId', 'name slug logoUrl')
@@ -1297,6 +1309,18 @@ export class GiftCardsService implements OnModuleInit {
 
       await trade.save({ session });
       await session.commitTransaction();
+
+      if (dto.status === TradeStatus.APPROVED) {
+        await this.walletService
+          .checkReferralQualification(
+            trade.userId.toString(),
+            trade.amountNgn,
+            trade.walletTransactionId as Types.ObjectId,
+          )
+          .catch((err: any) =>
+            this.logger.warn(`Referral qualification failed: ${err.message}`),
+          );
+      }
 
       // Re-populate after save so the response has full objects
       const populated = await this.tradeModel

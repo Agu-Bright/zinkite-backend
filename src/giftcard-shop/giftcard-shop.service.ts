@@ -521,6 +521,16 @@ export class GiftCardShopService {
 
       await session.commitTransaction();
 
+      await this.walletService
+        .checkReferralQualification(
+          userId,
+          product.priceNgn,
+          (walletTxn as any)._id,
+        )
+        .catch((err: any) =>
+          this.logger.warn(`Referral qualification failed: ${err.message}`),
+        );
+
       this.logger.log(
         `Gift card purchased: user=${userId}, product=${product._id}, ref=${reference}, amount=${product.priceNgn}`,
       );

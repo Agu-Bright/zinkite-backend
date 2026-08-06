@@ -1,0 +1,227 @@
+import { BadGatewayException, BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { Connection, Model, Types } from 'mongoose';
+import { WalletService } from '../wallet/wallet.service';
+import { TransactionCategory, TransactionSource } from '../wallet/schemas/wallet-transaction.schema';
+import { NotificationsService } from '../notifications/notifications.service';
+import { VtpassClient } from './vtpass.client';
+import { VtuProductType, VtuTransaction, VtuTransactionDocument, VtuTransactionStatus } from './schemas/vtu-transaction.schema';
+import { PurchaseAirtimeDto, PurchaseDataDto, PurchaseElectricityDto, PurchaseTvDto, VtuQueryDto } from './dto/vtu.dto';
+
+const AIRTIME: Record<string, string> = { mtn: 'mtn', glo: 'glo', airtel: 'airtel', etisalat: 'etisalat' };
+const DATA: Record<string, string> = { mtn: 'mtn-data', glo: 'glo-data', airtel: 'airtel-data', etisalat: 'etisalat-data' };
+
+@Injectable()
+export class VtuService {
+  private readonly logger = new Logger(VtuService.name);
+  private readonly cache = new Map<string, { expires: number; data: any[] }>();
+
+  constructor(
+    @InjectModel(VtuTransaction.name) private readonly transactions: Model<VtuTransactionDocument>,
+    @InjectConnection() private readonly connection: Connection,
+    private readonly vtpass: VtpassClient,
+    private readonly wallet: WalletService,
+    private readonly notifications: NotificationsService,
+  ) {}
+
+  networks() {
+    return [
+      { id: 'mtn', name: 'MTN' }, { id: 'glo', name: 'Glo' },
+      { id: 'airtel', name: 'Airtel' }, { id: 'etisalat', name: '9mobile' },
+    ];
+  }
+
+  async variations(serviceId: string) {
+    const cached = this.cache.get(serviceId);
+    if (cached && cached.expires > Date.now()) return cached.data;
+    const data = await this.vtpass.variations(serviceId);
+    this.cache.set(serviceId, { data, expires: Date.now() + 30 * 60_000 });
+    return data;
+  }
+
+  dataPlans(network: string) {
+    const serviceId = DATA[network.toLowerCase()];
+    if (!serviceId) throw new BadRequestException('Unsupported network');
+    return this.variations(serviceId);
+  }
+
+  tvBouquets(serviceId: string) {
+    if (!['dstv', 'gotv', 'startimes'].includes(serviceId)) throw new BadRequestException('Unsupported TV provider');
+    return this.variations(serviceId);
+  }
+
+  electricityProviders() { return this.vtpass.services('electricity-bill'); }
+  verifyCustomer(serviceId: string, billersCode: string, type?: string) { return this.vtpass.verify(serviceId, billersCode, type); }
+
+  async purchaseAirtime(userId: string, dto: PurchaseAirtimeDto) {
+    return this.execute(userId, {
+      type: VtuProductType.AIRTIME, serviceId: AIRTIME[dto.network], providerName: dto.network.toUpperCase(),
+      recipient: dto.phone, phone: dto.phone, amountNaira: dto.amount,
+      payload: { phone: dto.phone },
+    });
+  }
+
+  async purchaseData(userId: string, dto: PurchaseDataDto) {
+    const serviceId = DATA[dto.network];
+    const plan = (await this.variations(serviceId)).find((p) => p.variation_code === dto.variationCode);
+    if (!plan) throw new BadRequestException('This data plan is no longer available');
+    const amount = Number(plan.variation_amount);
+    if (!Number.isFinite(amount) || amount <= 0) throw new BadGatewayException('Provider returned an invalid plan price');
+    return this.execute(userId, {
+      type: VtuProductType.DATA, serviceId, providerName: dto.network.toUpperCase(), recipient: dto.phone,
+      phone: dto.phone, amountNaira: amount, variationCode: dto.variationCode, variationName: plan.name,
+      payload: { phone: dto.phone, billersCode: dto.phone, variation_code: dto.variationCode },
+    });
+  }
+
+  async purchaseElectricity(userId: string, dto: PurchaseElectricityDto) {
+    const verification = await this.vtpass.verify(dto.serviceId, dto.meterNumber, dto.meterType);
+    return this.execute(userId, {
+      type: VtuProductType.ELECTRICITY, serviceId: dto.serviceId, providerName: verification?.content?.Customer_Name,
+      recipient: dto.meterNumber, phone: dto.phone, amountNaira: dto.amount, customer: verification?.content,
+      payload: { phone: dto.phone, billersCode: dto.meterNumber, variation_code: dto.meterType },
+    });
+  }
+
+  async purchaseTv(userId: string, dto: PurchaseTvDto) {
+    const [verification, plans] = await Promise.all([
+      this.vtpass.verify(dto.serviceId, dto.smartcardNumber), this.variations(dto.serviceId),
+    ]);
+    const plan = plans.find((p) => p.variation_code === dto.variationCode);
+    if (!plan) throw new BadRequestException('This bouquet is no longer available');
+    const amount = Number(plan.variation_amount);
+    if (!Number.isFinite(amount) || amount <= 0) throw new BadGatewayException('Provider returned an invalid bouquet price');
+    return this.execute(userId, {
+      type: VtuProductType.TV, serviceId: dto.serviceId, providerName: dto.serviceId.toUpperCase(),
+      recipient: dto.smartcardNumber, phone: dto.phone, amountNaira: amount, customer: verification?.content,
+      variationCode: dto.variationCode, variationName: plan.name,
+      payload: { phone: dto.phone, billersCode: dto.smartcardNumber, variation_code: dto.variationCode, subscription_type: 'change' },
+    });
+  }
+
+  private requestId() {
+    const d = new Date();
+    const stamp = [d.getFullYear(), `${d.getMonth() + 1}`.padStart(2, '0'), `${d.getDate()}`.padStart(2, '0'), `${d.getHours()}`.padStart(2, '0'), `${d.getMinutes()}`.padStart(2, '0')].join('');
+    return `${stamp}${Math.floor(10000000 + Math.random() * 90000000)}`;
+  }
+
+  private category(type: VtuProductType) {
+    if (type === VtuProductType.AIRTIME) return TransactionCategory.AIRTIME;
+    if (type === VtuProductType.DATA) return TransactionCategory.DATA;
+    if (type === VtuProductType.ELECTRICITY) return TransactionCategory.ELECTRICITY;
+    return TransactionCategory.TV;
+  }
+
+  private async execute(userId: string, input: any) {
+    const amount = Math.round(input.amountNaira * 100);
+    const requestId = this.requestId();
+    const reference = `VTU-${input.type}-${requestId}`;
+    const session = await this.connection.startSession();
+    let purchase: VtuTransactionDocument;
+    try {
+      session.startTransaction();
+      [purchase] = await this.transactions.create([{ userId: new Types.ObjectId(userId), ...input, amount, requestId, reference, status: VtuTransactionStatus.PENDING }], { session });
+      const debit = await this.wallet.debitWallet({ userId, amount, category: this.category(input.type), source: TransactionSource.VTU_VTPASS, narration: `${input.providerName || input.serviceId} ${input.type.toLowerCase()} purchase`, reference, relatedId: purchase._id, session });
+      purchase.walletTransactionId = (debit as any)._id;
+      await purchase.save({ session });
+      await session.commitTransaction();
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally { session.endSession(); }
+
+    try {
+      const response = await this.vtpass.pay({ request_id: requestId, serviceID: input.serviceId, amount: input.amountNaira, ...input.payload });
+      return await this.applyProviderResult(purchase!._id.toString(), response);
+    } catch (error) {
+      if (this.vtpass.isDefinitiveFailure(error)) return this.refund(purchase!._id.toString(), error.response?.data?.response_description || 'Provider rejected transaction');
+      await this.transactions.findByIdAndUpdate(purchase!._id, { status: VtuTransactionStatus.PROCESSING, failureReason: 'Awaiting provider confirmation' });
+      return this.transactions.findById(purchase!._id);
+    }
+  }
+
+  private providerState(response: any): 'success' | 'pending' | 'failed' {
+    const code = String(response?.code || '');
+    const status = String(response?.content?.transactions?.status || '').toLowerCase();
+    // The transaction status is more specific than the envelope code. VTpass
+    // can return code 000 while a transaction is still pending/initiated.
+    if (['pending', 'initiated', 'processing'].includes(status) || ['099', '001'].includes(code)) return 'pending';
+    if (['delivered', 'successful', 'success'].includes(status) || (code === '000' && !status)) return 'success';
+    return 'failed';
+  }
+
+  private async applyProviderResult(id: string, response: any) {
+    const state = this.providerState(response);
+    if (state === 'failed') return this.refund(id, response?.response_description || 'Provider rejected transaction', response);
+    const update: any = { providerResponse: response, providerReference: response?.content?.transactions?.transactionId || response?.requestId };
+    if (state === 'success') Object.assign(update, { status: VtuTransactionStatus.SUCCESS, completedAt: new Date(), purchasedCode: response?.purchased_code, units: response?.token || response?.units });
+    else update.status = VtuTransactionStatus.PROCESSING;
+    const txn = await this.transactions.findByIdAndUpdate(id, update, { new: true });
+    if (state === 'success' && txn) this.notifications.sendToUser(txn.userId.toString(), 'Payment successful', `Your ${txn.type.toLowerCase()} purchase was successful.`, { type: 'vtu', transactionId: id }).catch(() => undefined);
+    return txn;
+  }
+
+  async refund(id: string, reason = 'Transaction failed', response?: any) {
+    const session = await this.connection.startSession();
+    try {
+      session.startTransaction();
+      const txn = await this.transactions.findOne({ _id: id, status: { $in: [VtuTransactionStatus.PENDING, VtuTransactionStatus.PROCESSING, VtuTransactionStatus.FAILED] } }).session(session);
+      if (!txn) {
+        const existing = await this.transactions.findById(id);
+        if (!existing) throw new NotFoundException('VTU transaction not found');
+        return existing;
+      }
+      const refund = await this.wallet.creditWallet({ userId: txn.userId, amount: txn.amount, category: TransactionCategory.REFUND, source: TransactionSource.VTU_VTPASS, narration: `Refund for ${txn.reference}`, reference: `${txn.reference}-REFUND`, relatedId: txn._id, session });
+      txn.status = VtuTransactionStatus.REFUNDED; txn.failureReason = reason; txn.refundTransactionId = (refund as any)._id;
+      if (response) txn.providerResponse = response;
+      await txn.save({ session });
+      await session.commitTransaction();
+      this.notifications.sendToUser(txn.userId.toString(), 'Payment refunded', `Your unsuccessful ${txn.type.toLowerCase()} payment has been returned to your wallet.`, { type: 'vtu', transactionId: id }).catch(() => undefined);
+      return txn;
+    } catch (error) { await session.abortTransaction(); throw error; } finally { session.endSession(); }
+  }
+
+  async requery(id: string, userId?: string) {
+    const filter: any = { _id: id };
+    if (userId) filter.userId = new Types.ObjectId(userId);
+    const txn = await this.transactions.findOne(filter);
+    if (!txn) throw new NotFoundException('VTU transaction not found');
+    if (![VtuTransactionStatus.PENDING, VtuTransactionStatus.PROCESSING].includes(txn.status)) return txn;
+    try {
+      const result = await this.vtpass.requery(txn.requestId);
+      await this.transactions.findByIdAndUpdate(id, { $inc: { requeryCount: 1 }, lastRequeryAt: new Date() });
+      return this.applyProviderResult(id, result);
+    } catch (error) { this.logger.warn(`Requery failed for ${txn.reference}: ${error.message}`); return txn; }
+  }
+
+  async handleWebhook(payload: any) {
+    if (payload?.type === 'variation-update') this.cache.clear();
+    const requestId = payload?.data?.request_id || payload?.data?.requestId || payload?.request_id;
+    if (!requestId) return;
+    const txn = await this.transactions.findOne({ requestId }).select('_id');
+    // Never trust an unauthenticated callback for financial state. The callback
+    // only triggers a signed server-to-server requery using our secret key.
+    if (txn) await this.requery(txn._id.toString());
+  }
+
+  @Cron('*/5 * * * *')
+  async reconcilePending() {
+    const pending = await this.transactions.find({ status: { $in: [VtuTransactionStatus.PENDING, VtuTransactionStatus.PROCESSING] }, updatedAt: { $lte: new Date(Date.now() - 2 * 60_000) } }).sort({ updatedAt: 1 }).limit(50).select('_id');
+    for (const txn of pending) await this.requery(txn._id.toString());
+  }
+
+  async list(query: VtuQueryDto, userId?: string) {
+    const filter: any = {};
+    if (userId) filter.userId = new Types.ObjectId(userId); else if (query.userId) filter.userId = new Types.ObjectId(query.userId);
+    if (query.type) filter.type = query.type; if (query.status) filter.status = query.status;
+    const page = Number(query.page || 1), limit = Number(query.limit || 20);
+    const [data, total] = await Promise.all([this.transactions.find(filter).populate('userId', 'firstName lastName email phone').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit), this.transactions.countDocuments(filter)]);
+    return { data, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
+  }
+
+  async stats() {
+    const rows = await this.transactions.aggregate([{ $group: { _id: { type: '$type', status: '$status' }, count: { $sum: 1 }, amount: { $sum: '$amount' } } }]);
+    return rows;
+  }
+}
