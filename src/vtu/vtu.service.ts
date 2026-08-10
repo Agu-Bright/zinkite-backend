@@ -63,19 +63,7 @@ export class VtuService {
       recipient: dto.phone, phone: dto.phone, amountNaira: dto.amount,
       payload: { phone: dto.phone }, idempotencyKey,
     });
-
-    if (result?.status === VtuTransactionStatus.SUCCESS) return result;
-
-    if ([VtuTransactionStatus.FAILED, VtuTransactionStatus.REFUNDED].includes(result?.status)) {
-      throw new BadGatewayException(result?.failureReason || 'Airtime purchase failed. Your wallet was not charged.');
-    }
-
-    // Do not expose PENDING/PROCESSING as a purchase outcome. The transaction
-    // remains under server-side reconciliation so it can be resolved safely,
-    // but the client receives a clear error and must not report a purchase.
-    throw new BadGatewayException(
-      'Airtime delivery could not be confirmed. Please check your transaction history before trying again.',
-    );
+    return this.finalizeInstantPurchase(result, 'Airtime');
   }
 
   async purchaseData(userId: string, dto: PurchaseDataDto) {
@@ -84,11 +72,26 @@ export class VtuService {
     if (!plan) throw new BadRequestException('This data plan is no longer available');
     const amount = Number(plan.variation_amount);
     if (!Number.isFinite(amount) || amount <= 0) throw new BadGatewayException('Provider returned an invalid plan price');
-    return this.execute(userId, {
+    const result: any = await this.execute(userId, {
       type: VtuProductType.DATA, serviceId, providerName: dto.network.toUpperCase(), recipient: dto.phone,
       phone: dto.phone, amountNaira: amount, variationCode: dto.variationCode, variationName: plan.name,
       payload: { phone: dto.phone, billersCode: dto.phone, variation_code: dto.variationCode },
     });
+    return this.finalizeInstantPurchase(result, 'Data');
+  }
+
+  /**
+   * Airtime and data are instant-delivery products — from the user's
+   * perspective they either arrive or they don't. If `execute()` returns
+   * anything other than SUCCESS, we throw and let the caller show a plain
+   * failure. `execute()` has already refunded the wallet for AIRTIME/DATA
+   * when the final state was still PROCESSING, so throwing here doesn't
+   * leave any money in limbo.
+   */
+  private finalizeInstantPurchase(result: any, label: string) {
+    if (result?.status === VtuTransactionStatus.SUCCESS) return result;
+    const reason = result?.failureReason || `${label} purchase could not be completed. Your wallet has been refunded.`;
+    throw new BadGatewayException(reason);
   }
 
   async purchaseElectricity(userId: string, dto: PurchaseElectricityDto) {
@@ -169,26 +172,51 @@ export class VtuService {
       throw error;
     } finally { session.endSession(); }
 
+    // Products that MUST resolve to SUCCESS or REFUNDED in the request lifecycle
+    // (never leave the client staring at "processing"). Cardviro parity.
+    const isInstantDelivery =
+      input.type === VtuProductType.AIRTIME || input.type === VtuProductType.DATA;
+
     try {
       const response = await this.vtpass.pay({ request_id: requestId, serviceID: input.serviceId, amount: input.amountNaira, ...input.payload });
       let result: any = await this.applyProviderResult(purchase!._id.toString(), response);
 
-      // Airtime is an immediate-delivery product. VTpass can initially return
+      // Airtime/data are immediate-delivery products. VTpass can initially return
       // 099/initiated before the network confirms delivery, so requery briefly
       // before responding to the app. Only a delivered transaction is SUCCESS.
-      if (input.type === VtuProductType.AIRTIME && result?.status === VtuTransactionStatus.PROCESSING) {
-        result = await this.awaitAirtimeFinalState(purchase!._id.toString(), requestId, result);
+      if (isInstantDelivery && result?.status === VtuTransactionStatus.PROCESSING) {
+        result = await this.awaitFinalState(purchase!._id.toString(), requestId, result);
+      }
+
+      // If we still can't confirm delivery for airtime/data after the retry
+      // window, treat as failed and refund. The user should never see these
+      // types stuck in PROCESSING in their history.
+      if (isInstantDelivery && result?.status === VtuTransactionStatus.PROCESSING) {
+        return this.refund(
+          purchase!._id.toString(),
+          'Delivery could not be confirmed. Your wallet has been refunded — please try again.',
+        );
       }
 
       return result;
     } catch (error) {
       if (this.vtpass.isDefinitiveFailure(error)) return this.refund(purchase!._id.toString(), error.response?.data?.response_description || 'Provider rejected transaction');
+      // For instant-delivery products, an unknown provider error still needs
+      // a clean outcome — refund and mark REFUNDED rather than leaving it in
+      // limbo. Electricity and TV can safely stay in PROCESSING because their
+      // async delivery model matches how the user thinks about them.
+      if (isInstantDelivery) {
+        return this.refund(
+          purchase!._id.toString(),
+          (error as Error)?.message || 'Provider did not respond. Your wallet has been refunded.',
+        );
+      }
       await this.transactions.findByIdAndUpdate(purchase!._id, { status: VtuTransactionStatus.PROCESSING, failureReason: 'Awaiting provider confirmation' });
       return this.transactions.findById(purchase!._id);
     }
   }
 
-  private async awaitAirtimeFinalState(
+  private async awaitFinalState(
     transactionId: string,
     requestId: string,
     initial: any,
@@ -201,7 +229,7 @@ export class VtuService {
         result = await this.applyProviderResult(transactionId, response);
         if (![VtuTransactionStatus.PENDING, VtuTransactionStatus.PROCESSING].includes(result.status)) break;
       } catch (error) {
-        this.logger.warn(`Immediate airtime requery failed for ${requestId}: ${(error as Error).message}`);
+        this.logger.warn(`Immediate requery failed for ${requestId}: ${(error as Error).message}`);
       }
     }
     return result;
