@@ -2,6 +2,7 @@ import { BadGatewayException, BadRequestException, Injectable, Logger, NotFoundE
 import { Cron } from '@nestjs/schedule';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Connection, Model, Types } from 'mongoose';
+import * as crypto from 'crypto';
 import { WalletService } from '../wallet/wallet.service';
 import { TransactionCategory, TransactionSource } from '../wallet/schemas/wallet-transaction.schema';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -58,10 +59,11 @@ export class VtuService {
     if (idempotencyKey && !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
       throw new BadRequestException('Invalid idempotency key');
     }
+    const phone = this.normalizeNigerianPhone(dto.phone);
     const result: any = await this.execute(userId, {
       type: VtuProductType.AIRTIME, serviceId: AIRTIME[dto.network], providerName: dto.network.toUpperCase(),
-      recipient: dto.phone, phone: dto.phone, amountNaira: dto.amount,
-      payload: { phone: dto.phone }, idempotencyKey,
+      recipient: phone, phone, amountNaira: dto.amount,
+      payload: { phone }, idempotencyKey,
     });
     return this.finalizeInstantPurchase(result, 'Airtime');
   }
@@ -72,10 +74,11 @@ export class VtuService {
     if (!plan) throw new BadRequestException('This data plan is no longer available');
     const amount = Number(plan.variation_amount);
     if (!Number.isFinite(amount) || amount <= 0) throw new BadGatewayException('Provider returned an invalid plan price');
+    const phone = this.normalizeNigerianPhone(dto.phone);
     const result: any = await this.execute(userId, {
-      type: VtuProductType.DATA, serviceId, providerName: dto.network.toUpperCase(), recipient: dto.phone,
-      phone: dto.phone, amountNaira: amount, variationCode: dto.variationCode, variationName: plan.name,
-      payload: { phone: dto.phone, billersCode: dto.phone, variation_code: dto.variationCode },
+      type: VtuProductType.DATA, serviceId, providerName: dto.network.toUpperCase(), recipient: phone,
+      phone, amountNaira: amount, variationCode: dto.variationCode, variationName: plan.name,
+      payload: { phone, billersCode: phone, variation_code: dto.variationCode },
     });
     return this.finalizeInstantPurchase(result, 'Data');
   }
@@ -96,10 +99,11 @@ export class VtuService {
 
   async purchaseElectricity(userId: string, dto: PurchaseElectricityDto) {
     const verification = await this.vtpass.verify(dto.serviceId, dto.meterNumber, dto.meterType);
+    const phone = this.normalizeNigerianPhone(dto.phone);
     return this.execute(userId, {
       type: VtuProductType.ELECTRICITY, serviceId: dto.serviceId, providerName: verification?.content?.Customer_Name,
-      recipient: dto.meterNumber, phone: dto.phone, amountNaira: dto.amount, customer: verification?.content,
-      payload: { phone: dto.phone, billersCode: dto.meterNumber, variation_code: dto.meterType },
+      recipient: dto.meterNumber, phone, amountNaira: dto.amount, customer: verification?.content,
+      payload: { phone, billersCode: dto.meterNumber, variation_code: dto.meterType },
     });
   }
 
@@ -111,18 +115,50 @@ export class VtuService {
     if (!plan) throw new BadRequestException('This bouquet is no longer available');
     const amount = Number(plan.variation_amount);
     if (!Number.isFinite(amount) || amount <= 0) throw new BadGatewayException('Provider returned an invalid bouquet price');
+    const phone = this.normalizeNigerianPhone(dto.phone);
     return this.execute(userId, {
       type: VtuProductType.TV, serviceId: dto.serviceId, providerName: dto.serviceId.toUpperCase(),
-      recipient: dto.smartcardNumber, phone: dto.phone, amountNaira: amount, customer: verification?.content,
+      recipient: dto.smartcardNumber, phone, amountNaira: amount, customer: verification?.content,
       variationCode: dto.variationCode, variationName: plan.name,
-      payload: { phone: dto.phone, billersCode: dto.smartcardNumber, variation_code: dto.variationCode, subscription_type: 'change' },
+      payload: { phone, billersCode: dto.smartcardNumber, variation_code: dto.variationCode, subscription_type: 'change' },
     });
   }
 
-  private requestId() {
-    const d = new Date();
-    const stamp = [d.getFullYear(), `${d.getMonth() + 1}`.padStart(2, '0'), `${d.getDate()}`.padStart(2, '0'), `${d.getHours()}`.padStart(2, '0'), `${d.getMinutes()}`.padStart(2, '0')].join('');
-    return `${stamp}${Math.floor(10000000 + Math.random() * 90000000)}`;
+  /**
+   * VTpass request_id format:
+   *   YYYYMMDDHHMM<random-suffix>
+   *
+   * VTpass docs are strict — the timestamp prefix MUST reflect current time
+   * in the Africa/Lagos (UTC+1) timezone. If the server clock is on UTC
+   * (which Coolify / most cloud hosts default to) and we use local time, the
+   * timestamp is an hour behind Lagos and VTpass rejects the request with
+   * 401 / "Invalid Credentials" — the very error we've been seeing.
+   *
+   * Mirrors Cardviro's `generateRequestId` exactly.
+   */
+  private requestId(): string {
+    const now = new Date();
+    const lagosTime = new Date(now.getTime() + 60 * 60 * 1000); // UTC+1
+    const y = lagosTime.getUTCFullYear().toString();
+    const mo = String(lagosTime.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(lagosTime.getUTCDate()).padStart(2, '0');
+    const h = String(lagosTime.getUTCHours()).padStart(2, '0');
+    const mi = String(lagosTime.getUTCMinutes()).padStart(2, '0');
+    const suffix = crypto.randomBytes(6).toString('hex');
+    return `${y}${mo}${d}${h}${mi}${suffix}`;
+  }
+
+  /**
+   * Normalize a Nigerian phone number to VTpass's expected local format
+   * (`0XXXXXXXXXX`). VTpass rejects international-format numbers (`+234...`)
+   * on `/pay`, so we always convert to local before dispatch.
+   * Mirrors Cardviro's `formatPhoneNumber`.
+   */
+  private normalizeNigerianPhone(phone: string): string {
+    let p = String(phone || '').replace(/[\s\-\+]/g, '');
+    if (p.startsWith('234') && p.length === 13) p = '0' + p.slice(3);
+    if (!p.startsWith('0') && p.length === 10) p = '0' + p;
+    return p;
   }
 
   private category(type: VtuProductType) {

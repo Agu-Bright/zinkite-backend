@@ -153,24 +153,36 @@ export class NotificationsService implements OnModuleInit {
 
     if (messages.length === 0) return;
 
-    // Send in chunks
-    const chunks = this.expo.chunkPushNotifications(messages);
+    // Per-message send (see sendPush for rationale). Broadcasts routinely mix
+    // tokens from different EAS project generations, so batching guarantees
+    // failures. Concurrency 25 keeps Expo happy without serialising everything.
     const invalidTokens: string[] = [];
-
-    for (const chunk of chunks) {
-      try {
-        const tickets: any[] = await this.expo.sendPushNotificationsAsync(chunk);
-        tickets.forEach((ticket, idx) => {
-          if (ticket.status === 'error') {
-            if (ticket.details?.error === 'DeviceNotRegistered') {
-              invalidTokens.push((chunk[idx] as any).to as string);
+    const concurrency = 25;
+    for (let i = 0; i < messages.length; i += concurrency) {
+      const slice = messages.slice(i, i + concurrency);
+      await Promise.allSettled(
+        slice.map(async (message) => {
+          try {
+            const tickets: any[] = await this.expo.sendPushNotificationsAsync([message]);
+            const ticket = tickets?.[0];
+            if (ticket?.status === 'error') {
+              const err = ticket.details?.error;
+              if (err === 'DeviceNotRegistered' || err === 'InvalidCredentials') {
+                invalidTokens.push(message.to);
+              } else {
+                this.logger.warn(`Broadcast push error: ${ticket.message}`);
+              }
             }
-            this.logger.warn(`Push error: ${ticket.message}`);
+          } catch (error: any) {
+            const msg = String(error?.message || '');
+            if (msg.includes('same project') || msg.includes('conflicting tokens')) {
+              invalidTokens.push(message.to);
+            } else {
+              this.logger.error(`Broadcast push failed for ${message.to}: ${msg}`);
+            }
           }
-        });
-      } catch (error) {
-        this.logger.error(`Failed to send push chunk: ${error.message}`);
-      }
+        }),
+      );
     }
 
     // Clean up invalid tokens
@@ -179,7 +191,9 @@ export class NotificationsService implements OnModuleInit {
       this.logger.log(`Removed ${invalidTokens.length} invalid tokens`);
     }
 
-    this.logger.log(`Broadcast push sent: ${messages.length} messages to ${userIds.length} users`);
+    this.logger.log(
+      `Broadcast push sent: ${messages.length - invalidTokens.length}/${messages.length} messages to ${userIds.length} users`,
+    );
   }
 
   /**
@@ -221,39 +235,57 @@ export class NotificationsService implements OnModuleInit {
 
     if (messages.length === 0) return;
 
-    const chunks = this.expo.chunkPushNotifications(messages);
+    // Send each token in its own request. Expo requires every message in a
+    // batch to belong to the same project — if a user has tokens from an
+    // older build with a different EAS projectId (common right after a
+    // rebrand), batching throws "conflicting tokens" and NONE of the messages
+    // are delivered. Per-token sends make a bad token cost only itself.
     const invalidTokens: string[] = [];
 
-    for (const chunk of chunks) {
-      let retries = 2;
-      while (retries >= 0) {
+    await Promise.allSettled(
+      messages.map(async (message) => {
         try {
-          const tickets: any[] = await this.expo.sendPushNotificationsAsync(chunk);
-          tickets.forEach((ticket, idx) => {
-            if (ticket.status === 'error') {
-              if (ticket.details?.error === 'DeviceNotRegistered') {
-                invalidTokens.push((chunk[idx] as any).to as string);
-              }
+          const tickets: any[] = await this.expo.sendPushNotificationsAsync([message]);
+          const ticket = tickets?.[0];
+          if (ticket?.status === 'error') {
+            const err = ticket.details?.error;
+            if (err === 'DeviceNotRegistered' || err === 'InvalidCredentials') {
+              invalidTokens.push(message.to);
+              this.logger.warn(
+                `Removing token for user ${userId} — Expo says: ${err}`,
+              );
+            } else {
+              this.logger.warn(`Push error for user ${userId}: ${ticket.message}`);
             }
-          });
-          break; // Success — exit retry loop
-        } catch (error) {
-          retries--;
-          if (retries < 0) {
-            this.logger.error(`Failed to send push to user ${userId} after retries: ${error.message}`);
+          }
+        } catch (error: any) {
+          // Cross-project errors show up here as a throw. Nuke the offending
+          // token so we don't hit it again on every future send.
+          const msg = String(error?.message || '');
+          if (msg.includes('same project') || msg.includes('conflicting tokens')) {
+            invalidTokens.push(message.to);
+            this.logger.warn(
+              `Removing cross-project token for user ${userId}: ${message.to}`,
+            );
           } else {
-            await new Promise(r => setTimeout(r, 1000 * (2 - retries))); // Backoff: 1s, 2s
+            this.logger.error(
+              `Push failed for user ${userId} token ${message.to}: ${msg}`,
+            );
           }
         }
-      }
-    }
+      }),
+    );
 
     if (invalidTokens.length > 0) {
       await this.tokenModel.deleteMany({ token: { $in: invalidTokens } });
-      this.logger.log(`Removed ${invalidTokens.length} invalid tokens`);
+      this.logger.log(
+        `Removed ${invalidTokens.length} invalid token(s) for user ${userId}`,
+      );
     }
 
-    this.logger.log(`Push sent to user ${userId}: ${messages.length} device(s)`);
+    this.logger.log(
+      `Push sent to user ${userId}: ${messages.length - invalidTokens.length}/${messages.length} device(s) delivered`,
+    );
   }
 
   // ============================================
