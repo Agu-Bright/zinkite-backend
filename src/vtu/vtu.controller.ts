@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser, RequirePin } from '../common/decorators';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { PinGuard } from '../common/guards/pin.guard';
@@ -18,8 +19,16 @@ export class VtuController {
   @Post('verify') @UseGuards(JwtAuthGuard)
   async verify(@Body() dto: VerifyCustomerDto) { return { success: true, data: await this.service.verifyCustomer(dto.serviceId, dto.billersCode, dto.type) }; }
 
-  @Post('airtime') @UseGuards(JwtAuthGuard, PinGuard) @RequirePin()
-  async airtime(@CurrentUser() user: JwtPayload, @Body() dto: PurchaseAirtimeDto) { return { success: true, data: await this.service.purchaseAirtime(user.sub, dto) }; }
+  @Post('airtime')
+  @Throttle({ short: { limit: 1, ttl: 1000 }, medium: { limit: 3, ttl: 60000 }, long: { limit: 15, ttl: 3600000 } })
+  @UseGuards(JwtAuthGuard, PinGuard) @RequirePin()
+  async airtime(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: PurchaseAirtimeDto,
+    @Headers('x-idempotency-key') idempotencyKey?: string,
+  ) {
+    return { success: true, data: await this.service.purchaseAirtime(user.sub, dto, idempotencyKey) };
+  }
 
   @Post('data') @UseGuards(JwtAuthGuard, PinGuard) @RequirePin()
   async data(@CurrentUser() user: JwtPayload, @Body() dto: PurchaseDataDto) { return { success: true, data: await this.service.purchaseData(user.sub, dto) }; }

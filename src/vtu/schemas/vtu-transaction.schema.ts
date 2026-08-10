@@ -37,6 +37,7 @@ export class VtuTransaction {
 
   @Prop({ required: true, unique: true, index: true }) reference: string;
   @Prop({ required: true, unique: true, index: true }) requestId: string;
+  @Prop({ unique: true, sparse: true, index: true }) idempotencyKey?: string;
   @Prop({ type: Types.ObjectId, ref: 'WalletTransaction' }) walletTransactionId?: Types.ObjectId;
   @Prop({ type: Types.ObjectId, ref: 'WalletTransaction' }) refundTransactionId?: Types.ObjectId;
 

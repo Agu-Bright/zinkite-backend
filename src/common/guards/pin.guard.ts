@@ -16,6 +16,7 @@ import * as bcrypt from 'bcrypt';
 
 // Import UsersService instead of User model directly
 import { UsersService } from '../../users/users.service';
+import { UserStatus } from '../../users/schemas/user.schema';
 
 // Export constant for decorator
 export const REQUIRE_PIN_KEY = 'requirePin';
@@ -64,6 +65,10 @@ export class PinGuard implements CanActivate {
 
     if (!dbUser) {
       throw new ForbiddenException('User not found');
+    }
+
+    if (dbUser.status !== UserStatus.ACTIVE) {
+      throw new ForbiddenException('This account is not permitted to make transactions');
     }
 
     if (!dbUser.transactionPinHash) {

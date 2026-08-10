@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsEnum, IsIn, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 import { VtuProductType, VtuTransactionStatus } from '../schemas/vtu-transaction.schema';
 
 const normalizePhone = ({ value }: { value: string }) => String(value || '').replace(/\s+/g, '');
@@ -7,7 +7,7 @@ const normalizePhone = ({ value }: { value: string }) => String(value || '').rep
 export class PurchaseAirtimeDto {
   @IsIn(['mtn', 'glo', 'airtel', 'etisalat']) network: string;
   @Transform(normalizePhone) @Matches(/^(?:\+?234|0)[789]\d{9}$/) phone: string;
-  @IsNumber() @Min(50) @Max(50000) amount: number;
+  @IsNumber() @IsInt() @Min(50) @Max(50000) amount: number;
 }
 
 export class PurchaseDataDto {

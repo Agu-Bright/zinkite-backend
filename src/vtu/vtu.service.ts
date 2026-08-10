@@ -54,12 +54,28 @@ export class VtuService {
   electricityProviders() { return this.vtpass.services('electricity-bill'); }
   verifyCustomer(serviceId: string, billersCode: string, type?: string) { return this.vtpass.verify(serviceId, billersCode, type); }
 
-  async purchaseAirtime(userId: string, dto: PurchaseAirtimeDto) {
-    return this.execute(userId, {
+  async purchaseAirtime(userId: string, dto: PurchaseAirtimeDto, idempotencyKey?: string) {
+    if (idempotencyKey && !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
+      throw new BadRequestException('Invalid idempotency key');
+    }
+    const result: any = await this.execute(userId, {
       type: VtuProductType.AIRTIME, serviceId: AIRTIME[dto.network], providerName: dto.network.toUpperCase(),
       recipient: dto.phone, phone: dto.phone, amountNaira: dto.amount,
-      payload: { phone: dto.phone },
+      payload: { phone: dto.phone }, idempotencyKey,
     });
+
+    if (result?.status === VtuTransactionStatus.SUCCESS) return result;
+
+    if ([VtuTransactionStatus.FAILED, VtuTransactionStatus.REFUNDED].includes(result?.status)) {
+      throw new BadGatewayException(result?.failureReason || 'Airtime purchase failed. Your wallet was not charged.');
+    }
+
+    // Do not expose PENDING/PROCESSING as a purchase outcome. The transaction
+    // remains under server-side reconciliation so it can be resolved safely,
+    // but the client receives a clear error and must not report a purchase.
+    throw new BadGatewayException(
+      'Airtime delivery could not be confirmed. Please check your transaction history before trying again.',
+    );
   }
 
   async purchaseData(userId: string, dto: PurchaseDataDto) {
@@ -114,6 +130,28 @@ export class VtuService {
   }
 
   private async execute(userId: string, input: any) {
+    if (input.idempotencyKey) {
+      const existing = await this.transactions.findOne({ userId: new Types.ObjectId(userId), idempotencyKey: input.idempotencyKey });
+      if (existing) {
+        const samePurchase = existing.type === input.type
+          && existing.serviceId === input.serviceId
+          && existing.recipient === input.recipient
+          && existing.amount === Math.round(input.amountNaira * 100);
+        if (!samePurchase) throw new BadRequestException('Idempotency key has already been used for another purchase');
+        return existing;
+      }
+    }
+
+    if (input.type === VtuProductType.AIRTIME) {
+      const duplicateWindow = new Date(Date.now() - 30_000);
+      const recentDuplicate = await this.transactions.findOne({
+        userId: new Types.ObjectId(userId), type: input.type,
+        serviceId: input.serviceId, recipient: input.recipient,
+        amount: Math.round(input.amountNaira * 100), createdAt: { $gte: duplicateWindow },
+      }).sort({ createdAt: -1 });
+      if (recentDuplicate) return recentDuplicate;
+    }
+
     const amount = Math.round(input.amountNaira * 100);
     const requestId = this.requestId();
     const reference = `VTU-${input.type}-${requestId}`;
@@ -133,7 +171,16 @@ export class VtuService {
 
     try {
       const response = await this.vtpass.pay({ request_id: requestId, serviceID: input.serviceId, amount: input.amountNaira, ...input.payload });
-      return await this.applyProviderResult(purchase!._id.toString(), response);
+      let result: any = await this.applyProviderResult(purchase!._id.toString(), response);
+
+      // Airtime is an immediate-delivery product. VTpass can initially return
+      // 099/initiated before the network confirms delivery, so requery briefly
+      // before responding to the app. Only a delivered transaction is SUCCESS.
+      if (input.type === VtuProductType.AIRTIME && result?.status === VtuTransactionStatus.PROCESSING) {
+        result = await this.awaitAirtimeFinalState(purchase!._id.toString(), requestId, result);
+      }
+
+      return result;
     } catch (error) {
       if (this.vtpass.isDefinitiveFailure(error)) return this.refund(purchase!._id.toString(), error.response?.data?.response_description || 'Provider rejected transaction');
       await this.transactions.findByIdAndUpdate(purchase!._id, { status: VtuTransactionStatus.PROCESSING, failureReason: 'Awaiting provider confirmation' });
@@ -141,13 +188,33 @@ export class VtuService {
     }
   }
 
+  private async awaitAirtimeFinalState(
+    transactionId: string,
+    requestId: string,
+    initial: any,
+  ): Promise<any> {
+    let result: any = initial;
+    for (const delayMs of [800, 1500, 2500]) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      try {
+        const response = await this.vtpass.requery(requestId);
+        result = await this.applyProviderResult(transactionId, response);
+        if (![VtuTransactionStatus.PENDING, VtuTransactionStatus.PROCESSING].includes(result.status)) break;
+      } catch (error) {
+        this.logger.warn(`Immediate airtime requery failed for ${requestId}: ${(error as Error).message}`);
+      }
+    }
+    return result;
+  }
+
   private providerState(response: any): 'success' | 'pending' | 'failed' {
     const code = String(response?.code || '');
     const status = String(response?.content?.transactions?.status || '').toLowerCase();
-    // The transaction status is more specific than the envelope code. VTpass
-    // can return code 000 while a transaction is still pending/initiated.
+    // VTpass documents one definitive purchase success state for airtime:
+    // envelope code 000 AND content.transactions.status = delivered.
+    // A 000 response without `delivered` must never be reported as success.
+    if (code === '000' && status === 'delivered') return 'success';
     if (['pending', 'initiated', 'processing'].includes(status) || ['099', '001'].includes(code)) return 'pending';
-    if (['delivered', 'successful', 'success'].includes(status) || (code === '000' && !status)) return 'success';
     return 'failed';
   }
 
