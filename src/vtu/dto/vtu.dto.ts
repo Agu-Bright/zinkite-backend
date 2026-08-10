@@ -1,4 +1,4 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 import { VtuProductType, VtuTransactionStatus } from '../schemas/vtu-transaction.schema';
 
@@ -41,6 +41,8 @@ export class VtuQueryDto {
   @IsOptional() @IsEnum(VtuProductType) type?: VtuProductType;
   @IsOptional() @IsEnum(VtuTransactionStatus) status?: VtuTransactionStatus;
   @IsOptional() @IsString() userId?: string;
-  @IsOptional() @IsNumber() @Min(1) page = 1;
-  @IsOptional() @IsNumber() @Min(1) @Max(100) limit = 20;
+  // Query-string params always arrive as strings — force numeric coercion
+  // BEFORE @IsNumber runs, otherwise validation fails with "must be a number".
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit: number = 20;
 }
