@@ -138,21 +138,25 @@ export class VtuService {
     if (!/^0[789]\d{9}$/.test(phone)) {
       throw new BadRequestException(isShowmax ? 'Enter a valid 11-digit Showmax account phone number' : 'Enter a valid notification phone number');
     }
-    return this.execute(userId, {
+    const result: any = await this.execute(userId, {
       type: VtuProductType.TV, serviceId: dto.serviceId, providerName: isShowmax ? 'Showmax' : dto.serviceId.toUpperCase(),
       recipient: isShowmax ? phone : dto.smartcardNumber, phone, amountNaira: amount, customer: verification?.content,
       variationCode: dto.variationCode, variationName: plan.name,
-      // VTpass's updated Showmax endpoint documents only request_id,
-      // serviceID, billersCode and variation_code. `amount` is optional and
-      // is deliberately omitted to avoid argument validation differences
-      // between VTpass accounts/environments.
-      omitProviderAmount: isShowmax,
       payload: isShowmax
-        ? { billersCode: phone, variation_code: dto.variationCode }
+        // VTpass's live TV purchase handler uses the common TV argument
+        // shape even though the Showmax documentation omits `phone` from its
+        // field table. This matches the proven Cardviro implementation.
+        ? { phone, billersCode: phone, variation_code: dto.variationCode }
         : isStartimes
           ? { phone, billersCode: dto.smartcardNumber, variation_code: dto.variationCode }
           : { phone, billersCode: dto.smartcardNumber, variation_code: dto.variationCode, subscription_type: 'change' },
     });
+    if (result?.status === VtuTransactionStatus.SUCCESS || result?.status === VtuTransactionStatus.PROCESSING) {
+      return result;
+    }
+    throw new BadGatewayException(
+      result?.failureReason || 'TV subscription failed. Your wallet has been refunded.',
+    );
   }
 
   /**
@@ -248,7 +252,7 @@ export class VtuService {
       const response = await this.vtpass.pay({
         request_id: requestId,
         serviceID: input.serviceId,
-        ...(!input.omitProviderAmount ? { amount: input.amountNaira } : {}),
+        amount: input.amountNaira,
         ...input.payload,
       });
       let result: any = await this.applyProviderResult(purchase!._id.toString(), response);
@@ -320,7 +324,16 @@ export class VtuService {
 
   private async applyProviderResult(id: string, response: any) {
     const state = this.providerState(response);
-    if (state === 'failed') return this.refund(id, response?.response_description || 'Provider rejected transaction', response);
+    if (state === 'failed') {
+      const validationDetails = response?.content?.errors;
+      const detail = validationDetails
+        ? Object.values(validationDetails).flat().map(String).join(', ')
+        : '';
+      const reason = [response?.response_description || response?.message || 'Provider rejected transaction', detail]
+        .filter(Boolean)
+        .join(': ');
+      return this.refund(id, reason, response);
+    }
     const commissionNaira = Number(
       response?.content?.transactions?.commission_details?.amount ??
       response?.content?.transactions?.commission ?? 0,

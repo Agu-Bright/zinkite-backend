@@ -93,6 +93,17 @@ export class VtpassClient {
 
   async pay(payload: Record<string, any>): Promise<any> {
     const { data } = await this.http.post('/pay', payload);
+    const code = String(data?.code || 'NO_CODE');
+    const status = String(data?.content?.transactions?.status || 'NO_STATUS');
+    const description = String(data?.response_description || data?.message || 'No description');
+    this.logger.log(
+      `VTpass pay result | service=${payload.serviceID} | requestId=${payload.request_id} | code=${code} | status=${status} | description=${description}`,
+    );
+    if (data?.content?.errors) {
+      this.logger.warn(
+        `VTpass validation details | service=${payload.serviceID} | requestId=${payload.request_id} | errors=${JSON.stringify(data.content.errors)}`,
+      );
+    }
     return data;
   }
 
