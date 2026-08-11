@@ -60,7 +60,7 @@ export class VtuService {
   }
 
   tvBouquets(serviceId: string) {
-    if (!['dstv', 'gotv', 'startimes'].includes(serviceId)) throw new BadRequestException('Unsupported TV provider');
+    if (!['dstv', 'gotv', 'startimes', 'showmax'].includes(serviceId)) throw new BadRequestException('Unsupported TV provider');
     return this.variations(serviceId);
   }
 
@@ -124,19 +124,26 @@ export class VtuService {
   }
 
   async purchaseTv(userId: string, dto: PurchaseTvDto) {
+    const isShowmax = dto.serviceId === 'showmax';
     const [verification, plans] = await Promise.all([
-      this.vtpass.verify(dto.serviceId, dto.smartcardNumber), this.variations(dto.serviceId),
+      isShowmax ? Promise.resolve(null) : this.vtpass.verify(dto.serviceId, dto.smartcardNumber),
+      this.variations(dto.serviceId),
     ]);
     const plan = plans.find((p) => p.variation_code === dto.variationCode);
     if (!plan) throw new BadRequestException('This bouquet is no longer available');
     const amount = Number(plan.variation_amount);
     if (!Number.isFinite(amount) || amount <= 0) throw new BadGatewayException('Provider returned an invalid bouquet price');
-    const phone = this.normalizeNigerianPhone(dto.phone);
+    const phone = this.normalizeNigerianPhone(isShowmax ? dto.smartcardNumber : dto.phone);
+    if (!/^0[789]\d{9}$/.test(phone)) {
+      throw new BadRequestException(isShowmax ? 'Enter a valid 11-digit Showmax account phone number' : 'Enter a valid notification phone number');
+    }
     return this.execute(userId, {
-      type: VtuProductType.TV, serviceId: dto.serviceId, providerName: dto.serviceId.toUpperCase(),
-      recipient: dto.smartcardNumber, phone, amountNaira: amount, customer: verification?.content,
+      type: VtuProductType.TV, serviceId: dto.serviceId, providerName: isShowmax ? 'Showmax' : dto.serviceId.toUpperCase(),
+      recipient: isShowmax ? phone : dto.smartcardNumber, phone, amountNaira: amount, customer: verification?.content,
       variationCode: dto.variationCode, variationName: plan.name,
-      payload: { phone, billersCode: dto.smartcardNumber, variation_code: dto.variationCode, subscription_type: 'change' },
+      payload: isShowmax
+        ? { billersCode: phone, variation_code: dto.variationCode }
+        : { phone, billersCode: dto.smartcardNumber, variation_code: dto.variationCode, subscription_type: 'change' },
     });
   }
 
@@ -301,7 +308,15 @@ export class VtuService {
   private async applyProviderResult(id: string, response: any) {
     const state = this.providerState(response);
     if (state === 'failed') return this.refund(id, response?.response_description || 'Provider rejected transaction', response);
-    const update: any = { providerResponse: response, providerReference: response?.content?.transactions?.transactionId || response?.requestId };
+    const commissionNaira = Number(
+      response?.content?.transactions?.commission_details?.amount ??
+      response?.content?.transactions?.commission ?? 0,
+    );
+    const update: any = {
+      providerResponse: response,
+      providerReference: response?.content?.transactions?.transactionId || response?.requestId,
+      providerCommission: Number.isFinite(commissionNaira) ? Math.round(commissionNaira * 100) : 0,
+    };
     if (state === 'success') Object.assign(update, { status: VtuTransactionStatus.SUCCESS, completedAt: new Date(), purchasedCode: response?.purchased_code, units: response?.token || response?.units });
     else update.status = VtuTransactionStatus.PROCESSING;
     const txn = await this.transactions.findByIdAndUpdate(id, update, { new: true });
@@ -367,8 +382,41 @@ export class VtuService {
     return { data, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
   }
 
+  async findOne(id: string) {
+    if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid VTU transaction ID');
+    const transaction = await this.transactions
+      .findById(id)
+      .populate('userId', 'firstName lastName fullName email phone')
+      .populate('walletTransactionId')
+      .populate('refundTransactionId');
+    if (!transaction) throw new NotFoundException('VTU transaction not found');
+    return transaction;
+  }
+
   async stats() {
-    const rows = await this.transactions.aggregate([{ $group: { _id: { type: '$type', status: '$status' }, count: { $sum: 1 }, amount: { $sum: '$amount' } } }]);
+    const rows = await this.transactions.aggregate([
+      {
+        $addFields: {
+          calculatedCommission: {
+            $ifNull: [
+              '$providerCommission',
+              {
+                $multiply: [
+                  {
+                    $convert: {
+                      input: { $ifNull: ['$providerResponse.content.transactions.commission_details.amount', '$providerResponse.content.transactions.commission'] },
+                      to: 'double', onError: 0, onNull: 0,
+                    },
+                  },
+                  100,
+                ],
+              },
+            ],
+          },
+        },
+      },
+      { $group: { _id: { type: '$type', status: '$status' }, count: { $sum: 1 }, amount: { $sum: '$amount' }, commission: { $sum: '$calculatedCommission' } } },
+    ]);
     return rows;
   }
 }

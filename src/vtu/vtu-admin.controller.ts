@@ -16,6 +16,8 @@ export class VtuAdminController {
   }
   @Get('stats') @RequirePermissions(PERMISSIONS.VTU_VIEW)
   async stats() { return { success: true, data: await this.service.stats() }; }
+  @Get(':id') @RequirePermissions(PERMISSIONS.VTU_VIEW)
+  async detail(@Param('id') id: string) { return { success: true, data: await this.service.findOne(id) }; }
   @Post(':id/requery') @RequireAnyPermission(PERMISSIONS.VTU_RETRY, PERMISSIONS.ELECTRICITY_RETRY)
   async requery(@Param('id') id: string) { return { success: true, data: await this.service.requery(id) }; }
   @Post(':id/refund') @RequireAnyPermission(PERMISSIONS.VTU_REFUND, PERMISSIONS.ELECTRICITY_REFUND)

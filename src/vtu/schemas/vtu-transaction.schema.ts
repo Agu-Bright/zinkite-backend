@@ -44,6 +44,7 @@ export class VtuTransaction {
   @Prop({ enum: VtuTransactionStatus, default: VtuTransactionStatus.PENDING, index: true })
   status: VtuTransactionStatus;
   @Prop() providerReference?: string;
+  @Prop({ default: 0 }) providerCommission?: number; // kobo
   @Prop() failureReason?: string;
   @Prop() purchasedCode?: string;
   @Prop() units?: string;
@@ -61,3 +62,4 @@ export const VtuTransactionSchema = SchemaFactory.createForClass(VtuTransaction)
 VtuTransactionSchema.index({ userId: 1, createdAt: -1 });
 VtuTransactionSchema.index({ status: 1, updatedAt: 1 });
 VtuTransactionSchema.index({ type: 1, createdAt: -1 });
+VtuTransactionSchema.index({ serviceId: 1, createdAt: -1 });

@@ -39,7 +39,7 @@ export class PurchaseElectricityDto {
 }
 
 export class PurchaseTvDto {
-  @IsIn(['dstv', 'gotv', 'startimes']) serviceId: string;
+  @IsIn(['dstv', 'gotv', 'startimes', 'showmax']) serviceId: string;
   @IsString() smartcardNumber: string;
   @IsString() variationCode: string;
   @Transform(normalizePhone) @Matches(/^(?:\+?234|0)[789]\d{9}$/) phone: string;
