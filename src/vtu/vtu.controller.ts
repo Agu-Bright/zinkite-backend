@@ -45,6 +45,11 @@ export class VtuController {
     return { data: result.data, meta: { ...result.pagination, totalPages: result.pagination.pages } };
   }
 
+  @Get('transactions/:id') @UseGuards(JwtAuthGuard)
+  async transaction(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return { success: true, data: await this.service.findOneForUser(id, user.sub) };
+  }
+
   @Post('webhook')
   async webhook(@Body() payload: any) {
     await this.service.handleWebhook(payload);

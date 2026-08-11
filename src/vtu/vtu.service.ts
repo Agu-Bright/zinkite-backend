@@ -14,6 +14,20 @@ import { sortDataPlans } from './vtu-plan-sorter';
 
 const AIRTIME: Record<string, string> = { mtn: 'mtn', glo: 'glo', airtel: 'airtel', etisalat: 'etisalat' };
 const DATA: Record<string, string> = { mtn: 'mtn-data', glo: 'glo-data', airtel: 'airtel-data', etisalat: 'etisalat-data' };
+const ELECTRICITY_PROVIDERS: Record<string, string> = {
+  'ikeja-electric': 'Ikeja Electric (IKEDC) — Lagos',
+  'eko-electric': 'Eko Electricity (EKEDC) — Lagos',
+  'abuja-electric': 'Abuja Electricity (AEDC) — FCT, Niger, Kogi & Nasarawa',
+  'benin-electric': 'Benin Electricity (BEDC) — Edo, Delta, Ondo & Ekiti',
+  'enugu-electric': 'Enugu Electricity (EEDC) — Enugu, Anambra, Imo, Abia & Ebonyi',
+  'ibadan-electric': 'Ibadan Electricity (IBEDC) — Oyo, Ogun, Osun & Kwara',
+  'jos-electric': 'Jos Electricity (JED) — Plateau, Bauchi, Benue & Gombe',
+  'kaduna-electric': 'Kaduna Electric (KAEDCO) — Kaduna, Kebbi, Sokoto & Zamfara',
+  'kano-electric': 'Kano Electricity (KEDCO) — Kano, Jigawa & Katsina',
+  'port-harcourt-electric': 'Port Harcourt Electricity (PHED) — Rivers, Bayelsa, Cross River & Akwa Ibom',
+  'yola-electric': 'Yola Electricity (YEDC) — Adamawa, Borno, Taraba & Yobe',
+  'aba-electric': 'Aba Power — Abia',
+};
 
 @Injectable()
 export class VtuService {
@@ -117,7 +131,9 @@ export class VtuService {
     }
     const verification = await this.vtpass.verify(dto.serviceId, dto.meterNumber, dto.meterType);
     return this.execute(userId, {
-      type: VtuProductType.ELECTRICITY, serviceId: dto.serviceId, providerName: verification?.content?.Customer_Name,
+      type: VtuProductType.ELECTRICITY,
+      serviceId: dto.serviceId,
+      providerName: ELECTRICITY_PROVIDERS[dto.serviceId.toLowerCase()] || dto.serviceId,
       recipient: dto.meterNumber, phone, amountNaira: dto.amount, customer: verification?.content,
       payload: { phone, billersCode: dto.meterNumber, variation_code: dto.meterType },
     });
@@ -415,6 +431,16 @@ export class VtuService {
       .populate('userId', 'firstName lastName fullName email phone')
       .populate('walletTransactionId')
       .populate('refundTransactionId');
+    if (!transaction) throw new NotFoundException('VTU transaction not found');
+    return transaction;
+  }
+
+  async findOneForUser(id: string, userId: string) {
+    if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid VTU transaction ID');
+    const transaction = await this.transactions.findOne({
+      _id: new Types.ObjectId(id),
+      userId: new Types.ObjectId(userId),
+    });
     if (!transaction) throw new NotFoundException('VTU transaction not found');
     return transaction;
   }
