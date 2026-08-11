@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import { WalletService } from '../wallet/wallet.service';
 import { TransactionCategory, TransactionSource } from '../wallet/schemas/wallet-transaction.schema';
 import { NotificationsService } from '../notifications/notifications.service';
+import { UsersService } from '../users/users.service';
 import { VtpassClient } from './vtpass.client';
 import { VtuProductType, VtuTransaction, VtuTransactionDocument, VtuTransactionStatus } from './schemas/vtu-transaction.schema';
 import { PurchaseAirtimeDto, PurchaseDataDto, PurchaseElectricityDto, PurchaseTvDto, VtuQueryDto } from './dto/vtu.dto';
@@ -25,6 +26,7 @@ export class VtuService {
     private readonly vtpass: VtpassClient,
     private readonly wallet: WalletService,
     private readonly notifications: NotificationsService,
+    private readonly users: UsersService,
   ) {}
 
   networks() {
@@ -108,8 +110,12 @@ export class VtuService {
   }
 
   async purchaseElectricity(userId: string, dto: PurchaseElectricityDto) {
+    const user = await this.users.findById(userId);
+    const phone = this.normalizeNigerianPhone(String(user?.phone || dto.phone || ''));
+    if (!/^0[789]\d{9}$/.test(phone)) {
+      throw new BadRequestException('Add a valid phone number to your profile before paying an electricity bill');
+    }
     const verification = await this.vtpass.verify(dto.serviceId, dto.meterNumber, dto.meterType);
-    const phone = this.normalizeNigerianPhone(dto.phone);
     return this.execute(userId, {
       type: VtuProductType.ELECTRICITY, serviceId: dto.serviceId, providerName: verification?.content?.Customer_Name,
       recipient: dto.meterNumber, phone, amountNaira: dto.amount, customer: verification?.content,

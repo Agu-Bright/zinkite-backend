@@ -24,10 +24,18 @@ export class VerifyCustomerDto {
 
 export class PurchaseElectricityDto {
   @IsString() serviceId: string;
-  @IsString() meterNumber: string;
+  @Transform(({ value }) => String(value || '').replace(/\s+/g, ''))
+  @Matches(/^\d{1,13}$/, { message: 'Meter number must contain no more than 13 digits' })
+  meterNumber: string;
   @IsIn(['prepaid', 'postpaid']) meterType: string;
-  @Transform(normalizePhone) @Matches(/^(?:\+?234|0)[789]\d{9}$/) phone: string;
   @IsNumber() @Min(100) @Max(500000) amount: number;
+  // Kept optional for compatibility with mobile builds deployed while the
+  // electricity notification-phone field was being removed. The service
+  // always prefers the authenticated user's profile phone.
+  @IsOptional()
+  @Transform(normalizePhone)
+  @Matches(/^(?:\+?234|0)[789]\d{9}$/)
+  phone?: string;
 }
 
 export class PurchaseTvDto {
