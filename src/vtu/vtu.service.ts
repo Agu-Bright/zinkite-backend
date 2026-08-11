@@ -9,6 +9,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { VtpassClient } from './vtpass.client';
 import { VtuProductType, VtuTransaction, VtuTransactionDocument, VtuTransactionStatus } from './schemas/vtu-transaction.schema';
 import { PurchaseAirtimeDto, PurchaseDataDto, PurchaseElectricityDto, PurchaseTvDto, VtuQueryDto } from './dto/vtu.dto';
+import { sortDataPlans } from './vtu-plan-sorter';
 
 const AIRTIME: Record<string, string> = { mtn: 'mtn', glo: 'glo', airtel: 'airtel', etisalat: 'etisalat' };
 const DATA: Record<string, string> = { mtn: 'mtn-data', glo: 'glo-data', airtel: 'airtel-data', etisalat: 'etisalat-data' };
@@ -36,15 +37,24 @@ export class VtuService {
   async variations(serviceId: string) {
     const cached = this.cache.get(serviceId);
     if (cached && cached.expires > Date.now()) return cached.data;
-    const data = await this.vtpass.variations(serviceId);
+    const providerData = await this.vtpass.variations(serviceId);
+    const seen = new Set<string>();
+    const data = providerData.filter((item: any) => {
+      const code = String(item?.variation_code || '').trim();
+      const fallback = `${String(item?.name || '').trim()}|${String(item?.variation_amount || '').trim()}`;
+      const key = code || fallback;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     this.cache.set(serviceId, { data, expires: Date.now() + 30 * 60_000 });
     return data;
   }
 
-  dataPlans(network: string) {
+  async dataPlans(network: string) {
     const serviceId = DATA[network.toLowerCase()];
     if (!serviceId) throw new BadRequestException('Unsupported network');
-    return this.variations(serviceId);
+    return sortDataPlans(await this.variations(serviceId));
   }
 
   tvBouquets(serviceId: string) {
