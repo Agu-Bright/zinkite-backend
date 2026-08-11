@@ -42,7 +42,13 @@ export class PurchaseTvDto {
   @IsIn(['dstv', 'gotv', 'startimes', 'showmax']) serviceId: string;
   @IsString() smartcardNumber: string;
   @IsString() variationCode: string;
-  @Transform(normalizePhone) @Matches(/^(?:\+?234|0)[789]\d{9}$/) phone: string;
+  // Showmax uses `smartcardNumber` as the account phone number and does not
+  // require a second notification-phone argument. Keep this optional so both
+  // current and older mobile builds can submit the documented Showmax shape.
+  @IsOptional()
+  @Transform(normalizePhone)
+  @Matches(/^(?:\+?234|0)[789]\d{9}$/)
+  phone?: string;
 }
 
 export class VtuQueryDto {

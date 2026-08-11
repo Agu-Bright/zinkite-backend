@@ -125,6 +125,7 @@ export class VtuService {
 
   async purchaseTv(userId: string, dto: PurchaseTvDto) {
     const isShowmax = dto.serviceId === 'showmax';
+    const isStartimes = dto.serviceId === 'startimes';
     const [verification, plans] = await Promise.all([
       isShowmax ? Promise.resolve(null) : this.vtpass.verify(dto.serviceId, dto.smartcardNumber),
       this.variations(dto.serviceId),
@@ -133,7 +134,7 @@ export class VtuService {
     if (!plan) throw new BadRequestException('This bouquet is no longer available');
     const amount = Number(plan.variation_amount);
     if (!Number.isFinite(amount) || amount <= 0) throw new BadGatewayException('Provider returned an invalid bouquet price');
-    const phone = this.normalizeNigerianPhone(isShowmax ? dto.smartcardNumber : dto.phone);
+    const phone = this.normalizeNigerianPhone(isShowmax ? dto.smartcardNumber : dto.phone || '');
     if (!/^0[789]\d{9}$/.test(phone)) {
       throw new BadRequestException(isShowmax ? 'Enter a valid 11-digit Showmax account phone number' : 'Enter a valid notification phone number');
     }
@@ -141,9 +142,16 @@ export class VtuService {
       type: VtuProductType.TV, serviceId: dto.serviceId, providerName: isShowmax ? 'Showmax' : dto.serviceId.toUpperCase(),
       recipient: isShowmax ? phone : dto.smartcardNumber, phone, amountNaira: amount, customer: verification?.content,
       variationCode: dto.variationCode, variationName: plan.name,
+      // VTpass's updated Showmax endpoint documents only request_id,
+      // serviceID, billersCode and variation_code. `amount` is optional and
+      // is deliberately omitted to avoid argument validation differences
+      // between VTpass accounts/environments.
+      omitProviderAmount: isShowmax,
       payload: isShowmax
         ? { billersCode: phone, variation_code: dto.variationCode }
-        : { phone, billersCode: dto.smartcardNumber, variation_code: dto.variationCode, subscription_type: 'change' },
+        : isStartimes
+          ? { phone, billersCode: dto.smartcardNumber, variation_code: dto.variationCode }
+          : { phone, billersCode: dto.smartcardNumber, variation_code: dto.variationCode, subscription_type: 'change' },
     });
   }
 
@@ -237,7 +245,12 @@ export class VtuService {
       input.type === VtuProductType.AIRTIME || input.type === VtuProductType.DATA;
 
     try {
-      const response = await this.vtpass.pay({ request_id: requestId, serviceID: input.serviceId, amount: input.amountNaira, ...input.payload });
+      const response = await this.vtpass.pay({
+        request_id: requestId,
+        serviceID: input.serviceId,
+        ...(!input.omitProviderAmount ? { amount: input.amountNaira } : {}),
+        ...input.payload,
+      });
       let result: any = await this.applyProviderResult(purchase!._id.toString(), response);
 
       // Airtime/data are immediate-delivery products. VTpass can initially return
