@@ -338,6 +338,17 @@ export class VtuService {
     return 'failed';
   }
 
+  private purchasedCode(response: any): string | undefined {
+    const raw =
+      response?.purchased_code ??
+      response?.token ??
+      response?.mainToken ??
+      response?.content?.transactions?.extras ??
+      response?.Voucher?.[0];
+    const value = String(raw ?? '').trim();
+    return value || undefined;
+  }
+
   private async applyProviderResult(id: string, response: any) {
     const state = this.providerState(response);
     if (state === 'failed') {
@@ -359,7 +370,12 @@ export class VtuService {
       providerReference: response?.content?.transactions?.transactionId || response?.requestId,
       providerCommission: Number.isFinite(commissionNaira) ? Math.round(commissionNaira * 100) : 0,
     };
-    if (state === 'success') Object.assign(update, { status: VtuTransactionStatus.SUCCESS, completedAt: new Date(), purchasedCode: response?.purchased_code, units: response?.token || response?.units });
+    if (state === 'success') Object.assign(update, {
+      status: VtuTransactionStatus.SUCCESS,
+      completedAt: new Date(),
+      purchasedCode: this.purchasedCode(response),
+      units: response?.units ?? response?.mainTokenUnits,
+    });
     else update.status = VtuTransactionStatus.PROCESSING;
     const txn = await this.transactions.findByIdAndUpdate(id, update, { new: true });
     if (state === 'success' && txn) this.notifications.sendToUser(txn.userId.toString(), 'Payment successful', `Your ${txn.type.toLowerCase()} purchase was successful.`, { type: 'vtu', transactionId: id }).catch(() => undefined);

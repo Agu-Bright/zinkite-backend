@@ -46,6 +46,10 @@ export class PermissionsGuard implements CanActivate {
       throw new ForbiddenException('User not authenticated');
     }
 
+    // Super Admin is the platform owner role and must not lose access when a
+    // new permission is introduced after an access token was issued.
+    if (user.roleSlug === 'super-admin') return true;
+
     const userPermissions: string[] = user.permissions || [];
 
     // Check ALL required permissions

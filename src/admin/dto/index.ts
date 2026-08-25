@@ -62,6 +62,7 @@ export class ManualWalletAdjustmentDto {
 export enum UserStatusFilter {
   ACTIVE = 'ACTIVE',
   SUSPENDED = 'SUSPENDED',
+  DEACTIVATED = 'DEACTIVATED',
   DELETED = 'DELETED',
 }
 

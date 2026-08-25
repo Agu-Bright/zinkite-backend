@@ -109,6 +109,16 @@ export class User {
   isDeleted: boolean;
 
   /**
+   * Account deletion audit fields. Identity and financial records are retained
+   * for fraud investigation, reconciliation, disputes, and regulatory review.
+   */
+  @Prop({ type: Date, default: null, index: true })
+  deletedAt: Date | null;
+
+  @Prop({ type: String, default: null })
+  deletionReason: string | null;
+
+  /**
    * Login attempt tracking for account lockout
    */
   @Prop({ type: Number, default: 0 })
@@ -142,6 +152,7 @@ UserSchema.index({ email: 1 }, { unique: true, sparse: true });
 UserSchema.index({ phone: 1 }, { unique: true, sparse: true });
 UserSchema.index({ createdAt: -1 });
 UserSchema.index({ status: 1, isDeleted: 1 });
+UserSchema.index({ isDeleted: 1, deletedAt: -1 });
 UserSchema.index({ referralCode: 1 }, { unique: true, sparse: true });
 
 // Virtual for wallet (populated separately)

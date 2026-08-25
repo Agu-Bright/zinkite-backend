@@ -47,6 +47,7 @@ import {
   ManualWalletAdjustmentDto,
   AdjustmentType,
   UsersQueryDto,
+  UserStatusFilter,
   UpdateUserStatusDto,
   PaystackQueryDto,
   WithdrawalsQueryDto,
@@ -279,6 +280,38 @@ export class AdminService {
       { $group: { _id: null, total: { $sum: "$amountNgn" } } },
     ]);
 
+    // ── Withdrawal stats ──────────────────────────────────
+    // Anything still awaiting the admin to actually send the money.
+    // PROCESSING is the current flow (debit-on-submit). PENDING is legacy
+    // from the earlier admin-approved flow — kept in the "awaiting" bucket
+    // so old records are surfaced too.
+    const [
+      pendingWithdrawalsCount,
+      pendingWithdrawalsSumAgg,
+      withdrawalsToday,
+      totalWithdrawals,
+    ] = await Promise.all([
+      this.withdrawalModel.countDocuments({
+        status: {
+          $in: [WithdrawalStatus.PROCESSING, WithdrawalStatus.PENDING],
+        },
+      }),
+      this.withdrawalModel.aggregate([
+        {
+          $match: {
+            status: {
+              $in: [WithdrawalStatus.PROCESSING, WithdrawalStatus.PENDING],
+            },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+      this.withdrawalModel.countDocuments({ createdAt: { $gte: today } }),
+      this.withdrawalModel.countDocuments(),
+    ]);
+    const pendingWithdrawalsAmountKobo: number =
+      pendingWithdrawalsSumAgg[0]?.total ?? 0;
+
     return {
       totalUsers,
       activeUsers,
@@ -292,6 +325,12 @@ export class AdminService {
       tradeBreakdown: {
         standard: tradeStats(TradeType.STANDARD),
         lostDigits: tradeStats(TradeType.LOST_DIGITS),
+      },
+      withdrawals: {
+        pending: pendingWithdrawalsCount,
+        pendingAmountNaira: toNaira(pendingWithdrawalsAmountKobo),
+        today: withdrawalsToday,
+        total: totalWithdrawals,
       },
     };
   }
@@ -337,9 +376,11 @@ export class AdminService {
    * Get all users with filters
    */
   async getUsers(query: UsersQueryDto): Promise<PaginatedResult<User>> {
-    const filter: any = { isDeleted: false };
+    const filter: any = {
+      isDeleted: query.status === UserStatusFilter.DELETED,
+    };
 
-    if (query.status) {
+    if (query.status && query.status !== UserStatusFilter.DELETED) {
       filter.status = query.status;
     }
 
@@ -406,7 +447,12 @@ export class AdminService {
    */
   async getUserById(userId: string): Promise<any> {
     const user = await this.userModel
-      .findById(userId)
+      // Explicit isDeleted condition bypasses the schema's normal soft-delete
+      // scope for this authorized admin investigation endpoint.
+      .findOne({
+        _id: new Types.ObjectId(userId),
+        isDeleted: { $in: [true, false] },
+      })
       .select("-passwordHash -transactionPinHash");
 
     if (!user) {

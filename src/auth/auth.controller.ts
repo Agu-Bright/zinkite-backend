@@ -343,9 +343,9 @@ export class AuthController {
   @ApiOperation({
     summary: "Confirm account deletion with OTP",
     description:
-      "Permanently deletes the user account and all associated data after OTP verification.",
+      "Deactivates access and soft-deletes the account after OTP verification. Financial and security records are retained.",
   })
-  @ApiResponse({ status: 200, description: "Account deleted successfully" })
+  @ApiResponse({ status: 200, description: "Account deactivated successfully" })
   @ApiResponse({ status: 400, description: "Invalid or expired OTP" })
   async confirmAccountDeletion(@Body() dto: ConfirmAccountDeletionDto) {
     return this.authService.confirmAccountDeletion(dto);

@@ -259,12 +259,12 @@ export class EmailService {
           </div>
           <div class="content">
             <p>Hello,</p>
-            <p>We received a request to permanently delete your Zinkite account and all associated data. Use the code below to confirm:</p>
+            <p>We received a request to close and deactivate your Zinkite account. Use the code below to confirm:</p>
             <div class="otp-code">${otp}</div>
             <p>This code will expire in <strong>10 minutes</strong>.</p>
             <div class="warning">
               <strong>⚠️ Warning:</strong> This action is permanent and cannot be undone.
-              Your wallet balance, transaction history, and all personal data will be permanently removed.
+              You will lose access to the account. Transaction, financial, identity, and security records may be retained where required for fraud prevention, dispute resolution, compliance, and legal obligations.
               If you did not request this, please ignore this email and secure your account.
             </div>
           </div>
@@ -304,11 +304,11 @@ export class EmailService {
       <body>
         <div class="container">
           <div class="header">
-            <h1>Account Deleted</h1>
+            <h1>Account Deactivated</h1>
           </div>
           <div class="content">
             <p>Hello,</p>
-            <p>Your Zinkite account has been successfully deleted. All your personal data, wallet information, and transaction history have been removed from our systems.</p>
+            <p>Your Zinkite account has been closed and access has been deactivated. Transaction, financial, identity, and security records are retained securely for fraud prevention, dispute resolution, compliance, and legal obligations.</p>
             <p>If you believe this was done in error, please contact our support team immediately at <strong>support@zinkite.com</strong>.</p>
             <p>We're sorry to see you go. You're always welcome back.</p>
           </div>
@@ -322,9 +322,9 @@ export class EmailService {
 
     return this.send({
       to: email,
-      subject: 'Your Zinkite Account Has Been Deleted',
+      subject: 'Your Zinkite Account Has Been Deactivated',
       html,
-      text: 'Your Zinkite account has been successfully deleted. All your personal data has been removed. If this was done in error, contact support@zinkite.com immediately.',
+      text: 'Your Zinkite account has been closed and access has been deactivated. Required transaction, financial, identity, and security records are retained securely. If this was done in error, contact support@zinkite.com immediately.',
     });
   }
 

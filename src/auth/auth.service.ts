@@ -941,7 +941,7 @@ export class AuthService {
 
     return {
       message:
-        "Your account and all associated data have been permanently deleted.",
+        "Your account has been deactivated and you can no longer sign in.",
     };
   }
 

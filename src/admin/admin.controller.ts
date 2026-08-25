@@ -398,7 +398,7 @@ export class AdminController {
     @CurrentUser() admin: JwtPayload,
   ) {
     const permissions = admin.permissions || [];
-    const hasAllTrades = permissions.includes("giftcards.trades.view");
+    const hasAllTrades = admin.roleSlug === "super-admin" || permissions.includes("giftcards.trades.view");
     return this.adminService.getTrades(
       hasAllTrades ? query : { ...query, tradeType: TradeType.LOST_DIGITS },
     );
@@ -428,6 +428,7 @@ export class AdminController {
   ) {
     const trade = await this.adminService.getTradeById(id);
     if (
+      admin.roleSlug !== "super-admin" &&
       !(admin.permissions || []).includes("giftcards.trades.view") &&
       trade.tradeType !== TradeType.LOST_DIGITS
     ) {
@@ -456,7 +457,7 @@ export class AdminController {
     const trade = await this.adminService.getTradeById(id);
     const permissions = admin.permissions || [];
     if (trade.tradeType === TradeType.LOST_DIGITS) {
-      if (!permissions.includes("giftcards.lost-digits.manage")) {
+      if (admin.roleSlug !== "super-admin" && !permissions.includes("giftcards.lost-digits.manage")) {
         throw new ForbiddenException("Missing-code trade permission required");
       }
     } else if (

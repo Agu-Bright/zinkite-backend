@@ -242,7 +242,10 @@ export class UsersService {
   }
 
   /**
-   * Soft-delete a user: set isDeleted flag and anonymize PII
+   * Soft-delete a user without destroying identity or financial evidence.
+   * Authentication secrets are revoked, while PII, provider links, wallet,
+   * transactions, trades, withdrawals, and audit records remain available to
+   * authorized administrators.
    */
   async softDeleteUser(
     userId: string | Types.ObjectId,
@@ -253,29 +256,22 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
-    const anonymized = `deleted_${user._id}`;
-
     await this.userModel
       .findByIdAndUpdate(
         userId,
         {
           isDeleted: true,
           status: 'DEACTIVATED',
-          email: `${anonymized}@deleted.zinkite.com`,
-          phone: null,
-          fullName: 'Deleted User',
-          avatarUrl: null,
+          deletedAt: new Date(),
+          deletionReason: 'USER_REQUEST',
+          // Revoke password/PIN authentication. JWT validation separately
+          // rejects isDeleted users, including already-issued access tokens.
           passwordHash: null,
           transactionPinHash: null,
         },
         { session: session || undefined },
       )
       .exec();
-
-    // Remove linked provider accounts
-    await this.authProviderModel
-      .deleteMany({ userId: new Types.ObjectId(userId) })
-      .session(session || null);
 
     this.logger.log(`User soft-deleted: ${userId}`);
   }
