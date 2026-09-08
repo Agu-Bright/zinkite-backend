@@ -48,18 +48,16 @@ export class VtpassClient {
       return request;
     });
 
-    // Dump the ENTIRE VTpass error response to the terminal on ANY failure.
-    // Uses raw console.log so nothing (log level, filter, log shipper) can
-    // suppress this — we want the full body verbatim.
+    // Dump the ENTIRE VTpass error response, one field per log line so
+    // NestJS's Logger emits each as its own [Nest] ERROR entry — that way
+    // Coolify / any log aggregator can't strip it as "raw stdout noise".
     this.http.interceptors.response.use(
       (response) => response,
       (error) => {
         const req = error?.config || {};
         const res = error?.response || {};
-        const stamp = new Date().toISOString();
 
-        // Print request body but redact the Authorization header so we don't
-        // leak the base64(username:password) into logs.
+        // Redact auth headers so screenshots stay safe to share.
         const sanitizedReqHeaders = { ...(req.headers || {}) };
         for (const k of Object.keys(sanitizedReqHeaders)) {
           if (/^authorization$/i.test(k)) sanitizedReqHeaders[k] = '[REDACTED]';
@@ -67,24 +65,21 @@ export class VtpassClient {
           if (/^api-key$/i.test(k)) sanitizedReqHeaders[k] = '[REDACTED]';
         }
 
-        // eslint-disable-next-line no-console
-        console.error(
-          [
-            '',
-            '========================= VTPASS ERROR =========================',
-            `time         : ${stamp}`,
-            `request      : ${String(req.method || '').toUpperCase()} ${req.baseURL || ''}${req.url || ''}`,
-            `req headers  : ${JSON.stringify(sanitizedReqHeaders)}`,
-            `req body     : ${typeof req.data === 'string' ? req.data : JSON.stringify(req.data)}`,
-            `status       : ${res.status || 'no status'} ${res.statusText || ''}`,
-            `res headers  : ${JSON.stringify(res.headers || {})}`,
-            `res body     : ${typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2)}`,
-            `axios msg    : ${error?.message || ''}`,
-            `axios code   : ${error?.code || ''}`,
-            '================================================================',
-            '',
-          ].join('\n'),
-        );
+        const method = String(req.method || '').toUpperCase();
+        const fullUrl = `${req.baseURL || ''}${req.url || ''}`;
+        const status = res.status ? `${res.status} ${res.statusText || ''}` : 'NO_RESPONSE';
+        const reqBody = typeof req.data === 'string' ? req.data : JSON.stringify(req.data);
+        const resBody = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+
+        this.logger.error('===== VTPASS ERROR (start) =====');
+        this.logger.error(`>>> REQUEST: ${method} ${fullUrl}`);
+        this.logger.error(`>>> REQ HEADERS: ${JSON.stringify(sanitizedReqHeaders)}`);
+        this.logger.error(`>>> REQ BODY: ${reqBody}`);
+        this.logger.error(`<<< HTTP STATUS: ${status}`);
+        this.logger.error(`<<< RES HEADERS: ${JSON.stringify(res.headers || {})}`);
+        this.logger.error(`<<< RES BODY: ${resBody}`);
+        this.logger.error(`AXIOS MSG: ${error?.message || ''} | AXIOS CODE: ${error?.code || ''}`);
+        this.logger.error('===== VTPASS ERROR (end) =====');
 
         throw error;
       },
