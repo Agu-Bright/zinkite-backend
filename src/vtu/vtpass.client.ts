@@ -48,28 +48,44 @@ export class VtpassClient {
       return request;
     });
 
-    // Diagnostic response interceptor — turn 401s into actionable log lines
-    // instead of the generic "Request failed with status code 401".
+    // Dump the ENTIRE VTpass error response to the terminal on ANY failure.
+    // Uses raw console.log so nothing (log level, filter, log shipper) can
+    // suppress this — we want the full body verbatim.
     this.http.interceptors.response.use(
       (response) => response,
       (error) => {
-        const status = error?.response?.status;
-        const url = `${error?.config?.method?.toUpperCase() || ''} ${error?.config?.url || ''}`;
-        const body = error?.response?.data;
-        if (status === 401) {
-          this.logger.error(
-            `VTpass 401 UNAUTHORIZED on ${url}. ` +
-              `baseURL=${baseURL} basicAuth=${basicAuth ? 'on' : 'off'} ` +
-              `— Check: (1) API key + secret key belong to the SAME environment as baseURL (sandbox vs live). ` +
-              `(2) If your account requires Basic Auth, set VTPASS_USERNAME + VTPASS_PASSWORD. ` +
-              `(3) If your account is IP-whitelisted on VTpass, confirm your server's outbound IP is on the list. ` +
-              `Response body: ${JSON.stringify(body)}`,
-          );
-        } else if (status) {
-          this.logger.warn(
-            `VTpass ${status} on ${url}. Response: ${JSON.stringify(body)}`,
-          );
+        const req = error?.config || {};
+        const res = error?.response || {};
+        const stamp = new Date().toISOString();
+
+        // Print request body but redact the Authorization header so we don't
+        // leak the base64(username:password) into logs.
+        const sanitizedReqHeaders = { ...(req.headers || {}) };
+        for (const k of Object.keys(sanitizedReqHeaders)) {
+          if (/^authorization$/i.test(k)) sanitizedReqHeaders[k] = '[REDACTED]';
+          if (/^secret-key$/i.test(k)) sanitizedReqHeaders[k] = '[REDACTED]';
+          if (/^api-key$/i.test(k)) sanitizedReqHeaders[k] = '[REDACTED]';
         }
+
+        // eslint-disable-next-line no-console
+        console.error(
+          [
+            '',
+            '========================= VTPASS ERROR =========================',
+            `time         : ${stamp}`,
+            `request      : ${String(req.method || '').toUpperCase()} ${req.baseURL || ''}${req.url || ''}`,
+            `req headers  : ${JSON.stringify(sanitizedReqHeaders)}`,
+            `req body     : ${typeof req.data === 'string' ? req.data : JSON.stringify(req.data)}`,
+            `status       : ${res.status || 'no status'} ${res.statusText || ''}`,
+            `res headers  : ${JSON.stringify(res.headers || {})}`,
+            `res body     : ${typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2)}`,
+            `axios msg    : ${error?.message || ''}`,
+            `axios code   : ${error?.code || ''}`,
+            '================================================================',
+            '',
+          ].join('\n'),
+        );
+
         throw error;
       },
     );
