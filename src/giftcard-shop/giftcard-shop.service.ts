@@ -148,24 +148,61 @@ export class GiftCardShopService {
     return updated;
   }
 
-  async addCodes(productId: string, dto: AddCodesDto): Promise<{ added: number }> {
+  async addCodes(
+    productId: string,
+    dto: AddCodesDto,
+  ): Promise<{ added: number; skipped: number }> {
     const product = await this.productModel.findById(productId);
     if (!product) {
       throw new NotFoundException('Product not found');
     }
 
-    const codeDocs = dto.codes.map((entry) => ({
-      productId: new Types.ObjectId(productId),
-      code: entry.code,
-      pin: entry.pin || null,
-      serialNumber: entry.serialNumber || null,
-      status: ShopCodeStatus.AVAILABLE,
-    }));
+    // De-dupe within the batch (a code delivered twice = the same value sold
+    // to two buyers), keeping the first occurrence of each code.
+    const seen = new Set<string>();
+    const batch: typeof dto.codes = [];
+    for (const entry of dto.codes) {
+      const key = entry.code.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      batch.push({ ...entry, code: key });
+    }
+
+    // Drop any codes that already exist for this product (there is no unique
+    // index on `code`, so this guard is what prevents a re-paste from
+    // double-stocking the same value).
+    const existing = await this.codeModel
+      .find({
+        productId: new Types.ObjectId(productId),
+        code: { $in: batch.map((e) => e.code) },
+      })
+      .select('code')
+      .lean();
+    const existingCodes = new Set(existing.map((e: any) => e.code));
+
+    const codeDocs = batch
+      .filter((entry) => !existingCodes.has(entry.code))
+      .map((entry) => ({
+        productId: new Types.ObjectId(productId),
+        code: entry.code,
+        pin: entry.pin || null,
+        serialNumber: entry.serialNumber || null,
+        status: ShopCodeStatus.AVAILABLE,
+      }));
+
+    const count = codeDocs.length;
+    const skipped = dto.codes.length - count;
+
+    if (count === 0) {
+      this.logger.log(
+        `No new codes added to product ${productId} (${skipped} duplicate/blank skipped)`,
+      );
+      return { added: 0, skipped };
+    }
 
     await this.codeModel.insertMany(codeDocs);
 
     // Atomically increment counts
-    const count = codeDocs.length;
     await this.productModel.findByIdAndUpdate(productId, {
       $inc: { totalCodes: count, availableCodes: count },
     });
@@ -177,8 +214,10 @@ export class GiftCardShopService {
       });
     }
 
-    this.logger.log(`Added ${count} codes to product ${productId}`);
-    return { added: count };
+    this.logger.log(
+      `Added ${count} codes to product ${productId}${skipped ? ` (${skipped} duplicate/blank skipped)` : ''}`,
+    );
+    return { added: count, skipped };
   }
 
   async getProducts(query: ShopProductQueryDto): Promise<PaginatedResult<GiftCardShopProduct>> {
@@ -306,6 +345,15 @@ export class GiftCardShopService {
         await this.productModel.findByIdAndUpdate(
           purchase.productId,
           { $inc: { availableCodes: 1, soldCount: -1 } },
+          { session },
+        );
+
+        // If the product had sold out, the restored code makes it buyable
+        // again — flip OUT_OF_STOCK back to ACTIVE. Leave a deliberate
+        // INACTIVE untouched (admin disabled it on purpose).
+        await this.productModel.updateOne(
+          { _id: purchase.productId, status: ShopProductStatus.OUT_OF_STOCK },
+          { status: ShopProductStatus.ACTIVE },
           { session },
         );
       }

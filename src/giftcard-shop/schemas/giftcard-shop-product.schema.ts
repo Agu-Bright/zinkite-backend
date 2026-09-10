@@ -22,8 +22,12 @@ export enum ShopProductStatus {
   toJSON: {
     virtuals: true,
     transform: (_, ret: Record<string, any>) => {
+      // Keep `_id` — both the mobile app and the web admin read products by
+      // `_id` (as do the purchase/code schemas). Expose `id` too for any
+      // consumer that prefers it. Stripping `_id` here previously left
+      // `product._id` undefined on the clients, breaking navigation and
+      // purchase.
       ret.id = ret._id;
-      delete ret._id;
       delete ret.__v;
       return ret;
     },
