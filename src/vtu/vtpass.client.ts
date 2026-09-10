@@ -31,6 +31,15 @@ export class VtpassClient {
       `VTpass client init | baseURL=${baseURL} | apiKey=${mask(apiKey)} | publicKey=${mask(publicKey)} | secretKey=${mask(secretKey)} | basicAuth=${basicAuth ? `on(user=${username.slice(0, 3)}…)` : 'off'}`,
     );
 
+    // TEMP DIAGNOSTIC — prints password length + first/last char so we can
+    // confirm whether the container is receiving the FULL 15-char string
+    // ("ZzvJad_YmPC$rW3") or a truncated one ("ZzvJad_YmPC") because a
+    // parser ate the `$rW3` as shell variable expansion. Remove after
+    // troubleshooting.
+    this.logger.warn(
+      `VTpass password diagnostic | len=${password.length} | first=${password.slice(0, 1)} | last=${password.slice(-1)} | contains$=${password.includes('$')}`,
+    );
+
     this.http = axios.create({
       baseURL,
       timeout: Number(config.get<string>('VTPASS_TIMEOUT_MS', '30000')),

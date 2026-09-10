@@ -829,20 +829,49 @@ export class AdminService {
   ): Promise<GiftCardTrade> {
     const result = await this.giftCardsService.reviewTrade(tradeId, adminId, dto);
 
-    // Send push notification to user
+    // Notify the user (in-app + push) for every admin decision, including
+    // PROCESSING — previously PROCESSING was skipped, so users got no signal
+    // when their trade was picked up for review.
     const userId = result.userId?.toString();
-    if (userId && dto.status !== TradeStatus.PROCESSING) {
-      const isApproved = dto.status === TradeStatus.APPROVED;
-      this.notificationsService.sendToUser(
-        userId,
-        isApproved ? 'Trade Approved' : 'Trade Rejected',
-        isApproved
-          ? `Your gift card trade has been approved. Wallet credited.`
-          : `Your gift card trade was rejected.${dto.rejectionReason ? ' Reason: ' + dto.rejectionReason : ''}`,
-        { type: 'trade_review', tradeId },
-        'TRADE' as any,
-        isApproved ? 'trade_approved' : 'trade_rejected',
-      ).catch((err) => this.logger.error('Failed to send trade notification:', err.message));
+    if (userId) {
+      let title: string | null = null;
+      let body = '';
+      let category = '';
+
+      switch (dto.status) {
+        case TradeStatus.APPROVED:
+          title = 'Trade Approved';
+          body = 'Your gift card trade has been approved. Wallet credited.';
+          category = 'trade_approved';
+          break;
+        case TradeStatus.REJECTED:
+          title = 'Trade Rejected';
+          body = `Your gift card trade was rejected.${dto.rejectionReason ? ' Reason: ' + dto.rejectionReason : ''}`;
+          category = 'trade_rejected';
+          break;
+        case TradeStatus.PROCESSING:
+          title = 'Trade Processing';
+          body =
+            "Your gift card trade is now being reviewed. We'll notify you as soon as there's an update.";
+          category = 'trade_review';
+          break;
+        // Any other status is not a user-facing decision — no notification.
+      }
+
+      if (title) {
+        this.notificationsService
+          .sendToUser(
+            userId,
+            title,
+            body,
+            { type: category, tradeId },
+            'TRADE' as any,
+            category,
+          )
+          .catch((err) =>
+            this.logger.error('Failed to send trade notification:', err.message),
+          );
+      }
     }
 
     return result;
