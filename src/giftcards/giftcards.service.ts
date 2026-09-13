@@ -1142,9 +1142,14 @@ export class GiftCardsService implements OnModuleInit {
     }
 
     if (query.search) {
+      // Reference-ID (and card code) search across the WHOLE collection.
+      // A plain case-insensitive regex needs no text index — the previous
+      // `$text` clause inside `$or` required one and broke the entire query
+      // when absent, so reference search returned nothing.
+      const term = query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
-        { reference: { $regex: query.search, $options: 'i' } },
-        { $text: { $search: query.search } },
+        { reference: { $regex: term, $options: 'i' } },
+        { cardCode: { $regex: term, $options: 'i' } },
       ];
     }
 
