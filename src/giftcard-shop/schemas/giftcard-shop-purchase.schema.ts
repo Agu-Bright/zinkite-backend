@@ -47,6 +47,12 @@ export class GiftCardShopPurchase {
   @Prop({ required: true, min: 0 })
   amountChargedNgn: number; // In kobo
 
+  // Snapshot of the product's cost at the moment of sale (kobo). Frozen here
+  // so profit reporting stays accurate even if the product's cost is edited
+  // later. 0 when no cost was recorded for the product.
+  @Prop({ type: Number, default: 0 })
+  costPriceNgn: number;
+
   // ─── Status ─────────────────────────────────────────────────
   @Prop({
     required: true,

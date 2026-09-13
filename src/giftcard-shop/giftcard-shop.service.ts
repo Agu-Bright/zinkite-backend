@@ -410,6 +410,8 @@ export class GiftCardShopService {
             $group: {
               _id: null,
               totalRevenue: { $sum: '$amountChargedNgn' },
+              // Profit = what buyers paid − the snapshotted cost of those cards.
+              totalCost: { $sum: '$costPriceNgn' },
               count: { $sum: 1 },
             },
           },
@@ -423,6 +425,7 @@ export class GiftCardShopService {
           _id: '$brandName',
           count: { $sum: 1 },
           revenue: { $sum: '$amountChargedNgn' },
+          cost: { $sum: '$costPriceNgn' },
         },
       },
       { $sort: { revenue: -1 } },
@@ -434,6 +437,9 @@ export class GiftCardShopService {
       statusMap[s._id] = s.count;
     });
 
+    const totalRevenueKobo = revenueAgg[0]?.totalRevenue || 0;
+    const totalCostKobo = revenueAgg[0]?.totalCost || 0;
+
     return {
       totalProducts,
       activeProducts,
@@ -441,11 +447,15 @@ export class GiftCardShopService {
       successfulPurchases: statusMap[ShopPurchaseStatus.SUCCESS] || 0,
       failedPurchases: statusMap[ShopPurchaseStatus.FAILED] || 0,
       refundedPurchases: statusMap[ShopPurchaseStatus.REFUNDED] || 0,
-      totalRevenueKobo: revenueAgg[0]?.totalRevenue || 0,
+      totalRevenueKobo,
+      totalCostKobo,
+      totalProfitKobo: totalRevenueKobo - totalCostKobo,
       byBrand: byBrand.map((b: any) => ({
         brandName: b._id,
         count: b.count,
         revenue: b.revenue,
+        cost: b.cost || 0,
+        profit: (b.revenue || 0) - (b.cost || 0),
       })),
     };
   }
@@ -566,6 +576,7 @@ export class GiftCardShopService {
         denominationValue: product.denominationValue,
         denominationCurrency: product.denominationCurrency,
         amountChargedNgn: product.priceNgn,
+        costPriceNgn: product.costPriceNgn || 0,
         status: ShopPurchaseStatus.SUCCESS,
         cardCode: claimedCode.code,
         cardPin: claimedCode.pin,
