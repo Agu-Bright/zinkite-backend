@@ -48,6 +48,7 @@ import {
   UpdateShopProductDto,
   ShopProductQueryDto,
   AddCodesDto,
+  ShopCodeQueryDto,
   PurchaseShopCardDto,
   ShopPurchaseQueryDto,
   UserShopPurchaseQueryDto,
@@ -244,6 +245,94 @@ export class GiftCardShopService {
       `Added ${count} codes to product ${productId}${skipped ? ` (${skipped} duplicate/blank skipped)` : ''}`,
     );
     return { added: count, skipped };
+  }
+
+  /** Mask a code for the admin stock list — never ship full secrets to a list view. */
+  private maskCode(code: string): string {
+    const clean = code.trim();
+    if (clean.length <= 4) return '••••';
+    return '••••' + clean.slice(-4);
+  }
+
+  /**
+   * Admin: list the individual cards in a product's stock (masked). Used by the
+   * "Manage stock" view so admins can see and prune inventory.
+   */
+  async getProductCodes(
+    productId: string,
+    query: ShopCodeQueryDto,
+  ): Promise<PaginatedResult<any>> {
+    const product = await this.productModel.findById(productId);
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const { page = 1, limit = 20, status } = query;
+    const filter: any = { productId: new Types.ObjectId(productId) };
+    if (status) filter.status = status;
+
+    const [data, total] = await Promise.all([
+      this.codeModel.find(filter).sort({ createdAt: -1 }).skip(calculateSkip(page, limit)).limit(limit).lean(),
+      this.codeModel.countDocuments(filter),
+    ]);
+
+    const items = data.map((c: any) => ({
+      _id: c._id,
+      codePreview: c.code ? this.maskCode(c.code) : null,
+      hasImage: !!c.imageUrl,
+      imageUrl: c.imageUrl || null, // admin-only endpoint; used to preview the card
+      hasPin: !!c.pin,
+      serialNumber: c.serialNumber || null,
+      status: c.status,
+      createdAt: c.createdAt,
+      purchasedAt: c.purchasedAt || null,
+    }));
+
+    return paginate(items, total, page, limit);
+  }
+
+  /**
+   * Admin: remove a single unsold card from a product's stock. Adjusts the
+   * denormalised counters and flips the product to OUT_OF_STOCK if it empties.
+   * Sold/reserved cards cannot be removed (they belong to a purchase).
+   */
+  async deleteCode(productId: string, codeId: string): Promise<{ deleted: boolean }> {
+    const code = await this.codeModel.findOne({
+      _id: new Types.ObjectId(codeId),
+      productId: new Types.ObjectId(productId),
+    });
+    if (!code) {
+      throw new NotFoundException('Code not found');
+    }
+    if (code.status !== ShopCodeStatus.AVAILABLE) {
+      throw new BadRequestException('Only available (unsold) cards can be removed');
+    }
+
+    const session = await this.connection.startSession();
+    session.startTransaction();
+    try {
+      await this.codeModel.deleteOne({ _id: code._id }, { session });
+      const updated = await this.productModel.findByIdAndUpdate(
+        productId,
+        { $inc: { availableCodes: -1, totalCodes: -1 } },
+        { new: true, session },
+      );
+      if (updated && updated.availableCodes <= 0 && updated.status === ShopProductStatus.ACTIVE) {
+        await this.productModel.findByIdAndUpdate(
+          productId,
+          { status: ShopProductStatus.OUT_OF_STOCK },
+          { session },
+        );
+      }
+      await session.commitTransaction();
+      this.logger.log(`Removed 1 available code from product ${productId}`);
+      return { deleted: true };
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
   }
 
   async getProducts(query: ShopProductQueryDto): Promise<PaginatedResult<GiftCardShopProduct>> {

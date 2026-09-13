@@ -8,6 +8,7 @@ import {
   Get,
   Post,
   Put,
+  Delete,
   Body,
   Param,
   Query,
@@ -26,6 +27,7 @@ import {
   UpdateShopProductDto,
   ShopProductQueryDto,
   AddCodesDto,
+  ShopCodeQueryDto,
   ShopPurchaseQueryDto,
   RefundShopPurchaseDto,
 } from './dto';
@@ -98,6 +100,31 @@ export class GiftCardShopAdminController {
     @Body() dto: AddCodesDto,
   ) {
     return this.shopService.addCodes(id, dto);
+  }
+
+  @Get('products/:id/codes')
+  @RequirePermissions('giftcard-buy.view')
+  @ApiOperation({ summary: 'List the cards in a product\'s stock (masked)' })
+  @ApiParam({ name: 'id', description: 'Product ID' })
+  @ApiResponse({ status: 200, description: 'Paginated stock list' })
+  async getProductCodes(
+    @Param('id') id: string,
+    @Query() query: ShopCodeQueryDto,
+  ) {
+    return this.shopService.getProductCodes(id, query);
+  }
+
+  @Delete('products/:id/codes/:codeId')
+  @RequirePermissions('giftcard-buy.manage')
+  @ApiOperation({ summary: 'Remove one unsold card from a product\'s stock' })
+  @ApiParam({ name: 'id', description: 'Product ID' })
+  @ApiParam({ name: 'codeId', description: 'Code ID' })
+  @ApiResponse({ status: 200, description: 'Card removed' })
+  async deleteCode(
+    @Param('id') id: string,
+    @Param('codeId') codeId: string,
+  ) {
+    return this.shopService.deleteCode(id, codeId);
   }
 
   // ============================================

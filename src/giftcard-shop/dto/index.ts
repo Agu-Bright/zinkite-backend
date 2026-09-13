@@ -236,6 +236,13 @@ export class CodeEntryDto {
   imageUrl?: string;
 }
 
+export class ShopCodeQueryDto extends PaginationDto {
+  @ApiPropertyOptional({ description: 'Filter by code status', example: 'AVAILABLE' })
+  @IsOptional()
+  @IsString()
+  status?: string;
+}
+
 export class AddCodesDto {
   @ApiProperty({ description: 'Array of card codes to add', type: [CodeEntryDto] })
   @IsArray()
