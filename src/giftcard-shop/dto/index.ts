@@ -211,10 +211,11 @@ export class ShopProductQueryDto extends PaginationDto {
 // ─── Code DTOs ─────────────────────────────────────────────
 
 export class CodeEntryDto {
-  @ApiProperty({ description: 'Gift card code' })
+  @ApiPropertyOptional({ description: 'Gift card code (text). Optional when an image is provided.' })
+  @IsOptional()
   @IsString()
   @MaxLength(500)
-  code: string;
+  code?: string;
 
   @ApiPropertyOptional({ description: 'Card PIN' })
   @IsOptional()
@@ -227,6 +228,12 @@ export class CodeEntryDto {
   @IsString()
   @MaxLength(100)
   serialNumber?: string;
+
+  @ApiPropertyOptional({ description: 'Secret card image URL. Optional when a text code is provided.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  imageUrl?: string;
 }
 
 export class AddCodesDto {

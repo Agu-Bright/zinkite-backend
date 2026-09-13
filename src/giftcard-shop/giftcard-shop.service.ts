@@ -157,36 +157,62 @@ export class GiftCardShopService {
       throw new NotFoundException('Product not found');
     }
 
-    // De-dupe within the batch (a code delivered twice = the same value sold
-    // to two buyers), keeping the first occurrence of each code.
+    // A deliverable card is a text code and/or an image. Normalise each entry
+    // and drop blanks (neither code nor image). De-dupe within the batch — the
+    // same value delivered twice would be sold to two buyers — keying on the
+    // text code where present, otherwise on the image URL.
     const seen = new Set<string>();
-    const batch: typeof dto.codes = [];
+    type Normalised = { code: string | null; pin: string | null; serialNumber: string | null; imageUrl: string | null };
+    const batch: Normalised[] = [];
     for (const entry of dto.codes) {
-      const key = entry.code.trim();
-      if (!key || seen.has(key)) continue;
+      const code = (entry.code || '').trim() || null;
+      const imageUrl = (entry.imageUrl || '').trim() || null;
+      if (!code && !imageUrl) continue; // nothing deliverable
+      const key = code ? `code:${code}` : `img:${imageUrl}`;
+      if (seen.has(key)) continue;
       seen.add(key);
-      batch.push({ ...entry, code: key });
+      batch.push({
+        code,
+        pin: (entry.pin || '').trim() || null,
+        serialNumber: (entry.serialNumber || '').trim() || null,
+        imageUrl,
+      });
     }
 
-    // Drop any codes that already exist for this product (there is no unique
-    // index on `code`, so this guard is what prevents a re-paste from
-    // double-stocking the same value).
+    if (batch.length === 0) {
+      return { added: 0, skipped: dto.codes.length };
+    }
+
+    // Drop entries that already exist for this product (no unique index, so
+    // this guard is what stops a re-submit from double-stocking the same
+    // value) — matched by code, or by image URL for image-based cards.
+    const codesInBatch = batch.map((e) => e.code).filter(Boolean) as string[];
+    const imagesInBatch = batch.map((e) => e.imageUrl).filter(Boolean) as string[];
     const existing = await this.codeModel
       .find({
         productId: new Types.ObjectId(productId),
-        code: { $in: batch.map((e) => e.code) },
+        $or: [
+          ...(codesInBatch.length ? [{ code: { $in: codesInBatch } }] : []),
+          ...(imagesInBatch.length ? [{ imageUrl: { $in: imagesInBatch } }] : []),
+        ],
       })
-      .select('code')
+      .select('code imageUrl')
       .lean();
-    const existingCodes = new Set(existing.map((e: any) => e.code));
+    const existingCodes = new Set(existing.map((e: any) => e.code).filter(Boolean));
+    const existingImages = new Set(existing.map((e: any) => e.imageUrl).filter(Boolean));
 
     const codeDocs = batch
-      .filter((entry) => !existingCodes.has(entry.code))
+      .filter((entry) =>
+        entry.code
+          ? !existingCodes.has(entry.code)
+          : !existingImages.has(entry.imageUrl),
+      )
       .map((entry) => ({
         productId: new Types.ObjectId(productId),
         code: entry.code,
-        pin: entry.pin || null,
-        serialNumber: entry.serialNumber || null,
+        pin: entry.pin,
+        serialNumber: entry.serialNumber,
+        imageUrl: entry.imageUrl,
         status: ShopCodeStatus.AVAILABLE,
       }));
 
@@ -543,6 +569,7 @@ export class GiftCardShopService {
         status: ShopPurchaseStatus.SUCCESS,
         cardCode: claimedCode.code,
         cardPin: claimedCode.pin,
+        cardImageUrl: claimedCode.imageUrl,
         walletTransactionId: (walletTxn as any)._id,
       });
       await purchase.save({ session });

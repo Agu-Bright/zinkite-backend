@@ -24,14 +24,22 @@ export class GiftCardShopCode {
   @Prop({ type: Types.ObjectId, ref: 'GiftCardShopProduct', required: true, index: true })
   productId: Types.ObjectId;
 
-  @Prop({ required: true })
-  code: string;
+  // A deliverable card can be a text code and/or an image of the card. At
+  // least one of `code` / `imageUrl` is present (enforced in the service).
+  @Prop({ type: String, default: null })
+  code: string | null;
 
   @Prop({ type: String, default: null })
   pin: string | null;
 
   @Prop({ type: String, default: null })
   serialNumber: string | null;
+
+  // Secret card image (e.g. a scan/photo of the card). Stored only on this
+  // hidden code doc and copied to the purchase on sale — never returned by
+  // any browse/detail endpoint.
+  @Prop({ type: String, default: null })
+  imageUrl: string | null;
 
   @Prop({
     type: String,

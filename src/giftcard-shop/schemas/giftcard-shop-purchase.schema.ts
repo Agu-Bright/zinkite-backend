@@ -63,6 +63,11 @@ export class GiftCardShopPurchase {
   @Prop({ type: String, default: null })
   cardPin: string | null;
 
+  // Delivered card image (when the stocked card is image-based). Snapshotted
+  // from the code at purchase time; only ever returned to the buyer.
+  @Prop({ type: String, default: null })
+  cardImageUrl: string | null;
+
   // ─── Wallet Linkage ─────────────────────────────────────────
   @Prop({ type: Types.ObjectId, ref: 'WalletTransaction', default: null })
   walletTransactionId: Types.ObjectId | null;
