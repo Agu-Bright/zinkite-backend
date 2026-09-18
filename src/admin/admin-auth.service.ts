@@ -240,11 +240,21 @@ export class AdminAuthService {
       lastLoginAt: admin.lastLoginAt,
       createdBy: admin.createdBy,
       createdAt: admin.createdAt,
+      roleId: {
+        _id: role._id,
+        name: role.name,
+        slug: role.slug,
+        description: role.description,
+        permissions: role.permissions,
+      },
+      // Retain the legacy field for older deployed admin clients while the
+      // canonical frontend contract uses roleId.
       role: {
         _id: role._id,
         name: role.name,
         slug: role.slug,
         description: role.description,
+        permissions: role.permissions,
       },
       permissions: role.permissions,
     };

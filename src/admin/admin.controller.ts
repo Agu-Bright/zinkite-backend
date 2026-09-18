@@ -17,6 +17,7 @@ import {
   HttpStatus,
   BadRequestException,
   ForbiddenException,
+  Request,
 } from "@nestjs/common";
 import { Types } from "mongoose";
 
@@ -145,7 +146,9 @@ export class AdminController {
     if (admin.roleSlug !== 'super-admin') {
       throw new ForbiddenException('Only the Super Admin can permanently delete users');
     }
-    return this.adminService.previewUnverifiedAccountCleanup(query.olderThanDays);
+    return this.adminService.previewUnverifiedAccountCleanup(
+      query.all ? undefined : query.olderThanDays,
+    );
   }
 
   @Post("users/unverified-cleanup")
@@ -159,7 +162,10 @@ export class AdminController {
     if (admin.roleSlug !== 'super-admin') {
       throw new ForbiddenException('Only the Super Admin can permanently delete users');
     }
-    return this.adminService.cleanupUnverifiedAccounts(admin.sub, dto.olderThanDays);
+    return this.adminService.cleanupUnverifiedAccounts(
+      admin.sub,
+      dto.all ? undefined : dto.olderThanDays,
+    );
   }
 
   @Get("security/blocked-ips")

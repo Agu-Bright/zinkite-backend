@@ -446,19 +446,21 @@ export class AdminService {
     return paginate(enriched as any, total, page, limit);
   }
 
-  private getUnverifiedCleanupFilter(olderThanDays: number) {
-    const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+  private getUnverifiedCleanupFilter(olderThanDays?: number) {
+    const cutoff = olderThanDays === undefined
+      ? null
+      : new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
     return {
       cutoff,
       filter: {
         isEmailVerified: false,
         isDeleted: false,
-        createdAt: { $lte: cutoff },
+        ...(cutoff ? { createdAt: { $lte: cutoff } } : {}),
       },
     };
   }
 
-  private async getUnverifiedPurgeCandidates(olderThanDays: number) {
+  private async getUnverifiedPurgeCandidates(olderThanDays?: number) {
     const { filter, cutoff } = this.getUnverifiedCleanupFilter(olderThanDays);
     const candidates = await this.userModel.find(filter).select('_id').lean();
     const candidateIds = candidates.map((user) => user._id);
@@ -484,20 +486,27 @@ export class AdminService {
     return { cutoff, candidateIds, eligibleIds };
   }
 
-  async previewUnverifiedAccountCleanup(olderThanDays: number) {
+  async previewUnverifiedAccountCleanup(olderThanDays?: number) {
     const { cutoff, candidateIds, eligibleIds } = await this.getUnverifiedPurgeCandidates(olderThanDays);
     return {
       olderThanDays,
+      all: olderThanDays === undefined,
       cutoff,
       eligibleCount: eligibleIds.length,
       protectedCount: candidateIds.length - eligibleIds.length,
     };
   }
 
-  async cleanupUnverifiedAccounts(adminId: string, olderThanDays: number) {
+  async cleanupUnverifiedAccounts(adminId: string, olderThanDays?: number) {
     const { cutoff, eligibleIds } = await this.getUnverifiedPurgeCandidates(olderThanDays);
     if (eligibleIds.length === 0) {
-      return { message: 'No eligible unverified accounts found', olderThanDays, cutoff, deletedCount: 0 };
+      return {
+        message: 'No eligible unverified accounts found',
+        olderThanDays,
+        all: olderThanDays === undefined,
+        cutoff,
+        deletedCount: 0,
+      };
     }
 
     const session = await this.connection.startSession();
@@ -514,7 +523,7 @@ export class AdminService {
           _id: { $in: eligibleIds },
           isEmailVerified: false,
           isDeleted: false,
-          createdAt: { $lte: cutoff },
+          ...(cutoff ? { createdAt: { $lte: cutoff } } : {}),
         }).session(session);
         deletedCount = result.deletedCount;
       });
@@ -525,16 +534,20 @@ export class AdminService {
     await this.auditService.logAdminAction(
       adminId,
       AuditAction.ADMIN_UNVERIFIED_USERS_PERMANENTLY_DELETED,
-      `Permanently deleted ${deletedCount} unverified account(s) older than ${olderThanDays} day(s)`,
+      AuditResource.USER,
+      'unverified-user-cleanup',
+      olderThanDays === undefined
+        ? `Permanently deleted ${deletedCount} eligible unverified account(s) of any age`
+        : `Permanently deleted ${deletedCount} unverified account(s) older than ${olderThanDays} day(s)`,
       {
-        resource: AuditResource.USER,
-        meta: { olderThanDays, cutoff, deletedCount },
+        meta: { olderThanDays, all: olderThanDays === undefined, cutoff, deletedCount },
       },
     );
 
     return {
       message: `${deletedCount} unverified account(s) permanently deleted`,
       olderThanDays,
+      all: olderThanDays === undefined,
       cutoff,
       deletedCount,
     };
@@ -560,8 +573,10 @@ export class AdminService {
     await this.auditService.logAdminAction(
       adminId,
       AuditAction.ADMIN_IP_BLOCKED,
+      AuditResource.USER,
+      ipAddress,
       `Blocked app access from IP ${ipAddress}`,
-      { resource: AuditResource.USER, meta: { ipAddress, reason } },
+      { meta: { ipAddress, reason } },
     );
     return blocked;
   }
@@ -580,8 +595,10 @@ export class AdminService {
     await this.auditService.logAdminAction(
       adminId,
       AuditAction.ADMIN_IP_UNBLOCKED,
+      AuditResource.USER,
+      ipAddress,
       `Unblocked app access from IP ${ipAddress}`,
-      { resource: AuditResource.USER, meta: { ipAddress } },
+      { meta: { ipAddress } },
     );
     return blocked;
   }

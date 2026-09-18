@@ -12,7 +12,10 @@ import {
   Min,
   Max,
   MinLength,
-  MaxLength,IsDateString
+  MaxLength,
+  IsDateString,
+  IsBoolean,
+  ValidateIf,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { PaginationDto } from '../../common/dto/pagination.dto';
@@ -106,17 +109,27 @@ export class UpdateUserStatusDto {
 }
 
 export class UnverifiedAccountCleanupDto {
-  @ApiProperty({
-    description: 'Soft-delete unverified accounts created at least this many days ago',
+  @ApiPropertyOptional({
+    description: 'Permanently delete eligible unverified accounts created at least this many days ago',
     example: 7,
     minimum: 1,
     maximum: 3650,
   })
+  @ValidateIf((dto) => !dto.all)
   @IsNumber()
   @Min(1)
   @Max(3650)
   @Type(() => Number)
-  olderThanDays: number;
+  olderThanDays?: number;
+
+  @ApiPropertyOptional({
+    description: 'Delete all eligible unverified accounts regardless of age',
+    default: false,
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  all?: boolean;
 }
 
 export class BlockIpAddressDto {
