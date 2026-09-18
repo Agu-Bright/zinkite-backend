@@ -40,6 +40,9 @@ import {
   ManualWalletAdjustmentDto,
   UsersQueryDto,
   UpdateUserStatusDto,
+  UnverifiedAccountCleanupDto,
+  BlockIpAddressDto,
+  UnblockIpAddressDto,
   PaystackQueryDto,
   DashboardStatsResponse,
   WithdrawalsQueryDto,
@@ -130,6 +133,62 @@ export class AdminController {
   @ApiResponse({ status: 200, description: "Paginated list of users" })
   async getUsers(@Query() query: UsersQueryDto) {
     return this.adminService.getUsers(query);
+  }
+
+  @Get("users/unverified-cleanup/preview")
+  @RequirePermissions("users.view")
+  @ApiOperation({ summary: "Preview unverified accounts eligible for cleanup" })
+  async previewUnverifiedAccountCleanup(
+    @CurrentUser() admin: JwtPayload,
+    @Query() query: UnverifiedAccountCleanupDto,
+  ) {
+    if (admin.roleSlug !== 'super-admin') {
+      throw new ForbiddenException('Only the Super Admin can permanently delete users');
+    }
+    return this.adminService.previewUnverifiedAccountCleanup(query.olderThanDays);
+  }
+
+  @Post("users/unverified-cleanup")
+  @RequirePermissions("users.ban")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Permanently delete old, inactive unverified accounts" })
+  async cleanupUnverifiedAccounts(
+    @CurrentUser() admin: JwtPayload,
+    @Body() dto: UnverifiedAccountCleanupDto,
+  ) {
+    if (admin.roleSlug !== 'super-admin') {
+      throw new ForbiddenException('Only the Super Admin can permanently delete users');
+    }
+    return this.adminService.cleanupUnverifiedAccounts(admin.sub, dto.olderThanDays);
+  }
+
+  @Get("security/blocked-ips")
+  @RequirePermissions("users.view")
+  @ApiOperation({ summary: "List active app IP blocks" })
+  async listBlockedIpAddresses() {
+    return this.adminService.listBlockedIpAddresses();
+  }
+
+  @Post("security/blocked-ips")
+  @RequirePermissions("users.ban")
+  @ApiOperation({ summary: "Block an IP address from app APIs" })
+  async blockIpAddress(
+    @CurrentUser() admin: JwtPayload,
+    @Request() request: Record<string, any>,
+    @Body() dto: BlockIpAddressDto,
+  ) {
+    return this.adminService.blockIpAddress(admin.sub, dto.ipAddress, dto.reason, request.ip);
+  }
+
+  @Post("security/blocked-ips/unblock")
+  @RequirePermissions("users.ban")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Remove an app IP block" })
+  async unblockIpAddress(
+    @CurrentUser() admin: JwtPayload,
+    @Body() dto: UnblockIpAddressDto,
+  ) {
+    return this.adminService.unblockIpAddress(admin.sub, dto.ipAddress);
   }
 
   @Get("users/:id")

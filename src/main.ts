@@ -18,6 +18,11 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
+  // The production service runs behind one reverse proxy. Trusting exactly
+  // one hop lets Express expose the real client IP without trusting an
+  // arbitrary X-Forwarded-For value supplied directly by a caller.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
   // Enable CORS for known clients
   const allowedOrigins = [
     'https://zinkitex.com',

@@ -105,6 +105,40 @@ export class UpdateUserStatusDto {
   reason: string;
 }
 
+export class UnverifiedAccountCleanupDto {
+  @ApiProperty({
+    description: 'Soft-delete unverified accounts created at least this many days ago',
+    example: 7,
+    minimum: 1,
+    maximum: 3650,
+  })
+  @IsNumber()
+  @Min(1)
+  @Max(3650)
+  @Type(() => Number)
+  olderThanDays: number;
+}
+
+export class BlockIpAddressDto {
+  @ApiProperty({ description: 'IPv4 or IPv6 address to block' })
+  @IsString()
+  @MaxLength(64)
+  ipAddress: string;
+
+  @ApiProperty({ description: 'Security reason for blocking this address' })
+  @IsString()
+  @MinLength(5)
+  @MaxLength(500)
+  reason: string;
+}
+
+export class UnblockIpAddressDto {
+  @ApiProperty({ description: 'IPv4 or IPv6 address to unblock' })
+  @IsString()
+  @MaxLength(64)
+  ipAddress: string;
+}
+
 export class DeleteTransactionDto {
   @ApiProperty({ description: 'Reason for removing the transaction from history' })
   @IsString()

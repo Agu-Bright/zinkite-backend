@@ -60,6 +60,8 @@ import {
   DeleteTransactionDto,
 } from "./dto";
 import { NotificationLog, NotificationLogDocument } from "./schemas/notification-log.schema";
+import { BlockedIp, BlockedIpDocument } from "./schemas/blocked-ip.schema";
+import { normalizeIpAddress } from "../common/utils/client-ip";
 import { EmailService } from "../email/email.service";
 import { TransactionsQueryDto } from "../wallet/dto";
 import {
@@ -103,6 +105,8 @@ export class AdminService {
     private readonly creditRequestModel: Model<WalletCreditRequestDocument>,
     @InjectModel(NotificationLog.name)
     private readonly notificationLogModel: Model<NotificationLogDocument>,
+    @InjectModel(BlockedIp.name)
+    private readonly blockedIpModel: Model<BlockedIpDocument>,
     @InjectConnection()
     private readonly connection: Connection,
     private readonly walletService: WalletService,
@@ -440,6 +444,146 @@ export class AdminService {
     }));
 
     return paginate(enriched as any, total, page, limit);
+  }
+
+  private getUnverifiedCleanupFilter(olderThanDays: number) {
+    const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+    return {
+      cutoff,
+      filter: {
+        isEmailVerified: false,
+        isDeleted: false,
+        createdAt: { $lte: cutoff },
+      },
+    };
+  }
+
+  private async getUnverifiedPurgeCandidates(olderThanDays: number) {
+    const { filter, cutoff } = this.getUnverifiedCleanupFilter(olderThanDays);
+    const candidates = await this.userModel.find(filter).select('_id').lean();
+    const candidateIds = candidates.map((user) => user._id);
+    if (candidateIds.length === 0) return { cutoff, candidateIds, eligibleIds: [] as Types.ObjectId[] };
+
+    const [fundedWallets, transactions, trades, withdrawals, paystack, korapay, referring, referred] =
+      await Promise.all([
+        this.walletModel.distinct('userId', { userId: { $in: candidateIds }, balance: { $ne: 0 } }),
+        this.walletTransactionModel.distinct('userId', { userId: { $in: candidateIds } }),
+        this.tradeModel.distinct('userId', { userId: { $in: candidateIds } }),
+        this.withdrawalModel.distinct('userId', { userId: { $in: candidateIds } }),
+        this.paystackModel.distinct('userId', { userId: { $in: candidateIds } }),
+        this.korapayModel.distinct('userId', { userId: { $in: candidateIds } }),
+        this.connection.collection('referrals').distinct('referrerId', { referrerId: { $in: candidateIds } }),
+        this.connection.collection('referrals').distinct('referredUserId', { referredUserId: { $in: candidateIds } }),
+      ]);
+
+    const protectedIds = new Set(
+      [...fundedWallets, ...transactions, ...trades, ...withdrawals, ...paystack, ...korapay, ...referring, ...referred]
+        .map((id) => String(id)),
+    );
+    const eligibleIds = candidateIds.filter((id) => !protectedIds.has(String(id)));
+    return { cutoff, candidateIds, eligibleIds };
+  }
+
+  async previewUnverifiedAccountCleanup(olderThanDays: number) {
+    const { cutoff, candidateIds, eligibleIds } = await this.getUnverifiedPurgeCandidates(olderThanDays);
+    return {
+      olderThanDays,
+      cutoff,
+      eligibleCount: eligibleIds.length,
+      protectedCount: candidateIds.length - eligibleIds.length,
+    };
+  }
+
+  async cleanupUnverifiedAccounts(adminId: string, olderThanDays: number) {
+    const { cutoff, eligibleIds } = await this.getUnverifiedPurgeCandidates(olderThanDays);
+    if (eligibleIds.length === 0) {
+      return { message: 'No eligible unverified accounts found', olderThanDays, cutoff, deletedCount: 0 };
+    }
+
+    const session = await this.connection.startSession();
+    let deletedCount = 0;
+    try {
+      await session.withTransaction(async () => {
+        await Promise.all([
+          this.walletModel.deleteMany({ userId: { $in: eligibleIds }, balance: 0 }).session(session),
+          this.connection.collection('otps').deleteMany({ userId: { $in: eligibleIds } }, { session }),
+          this.connection.collection('auth_provider_accounts').deleteMany({ userId: { $in: eligibleIds } }, { session }),
+          this.connection.collection('referrals').deleteMany({ referredUserId: { $in: eligibleIds } }, { session }),
+        ]);
+        const result = await this.userModel.deleteMany({
+          _id: { $in: eligibleIds },
+          isEmailVerified: false,
+          isDeleted: false,
+          createdAt: { $lte: cutoff },
+        }).session(session);
+        deletedCount = result.deletedCount;
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    await this.auditService.logAdminAction(
+      adminId,
+      AuditAction.ADMIN_UNVERIFIED_USERS_PERMANENTLY_DELETED,
+      `Permanently deleted ${deletedCount} unverified account(s) older than ${olderThanDays} day(s)`,
+      {
+        resource: AuditResource.USER,
+        meta: { olderThanDays, cutoff, deletedCount },
+      },
+    );
+
+    return {
+      message: `${deletedCount} unverified account(s) permanently deleted`,
+      olderThanDays,
+      cutoff,
+      deletedCount,
+    };
+  }
+
+  async listBlockedIpAddresses() {
+    return this.blockedIpModel.find({ isActive: true }).sort({ createdAt: -1 }).lean();
+  }
+
+  async blockIpAddress(adminId: string, rawIpAddress: string, reason: string, adminIpAddress: string) {
+    const ipAddress = normalizeIpAddress(rawIpAddress);
+    if (!ipAddress) throw new BadRequestException('A valid IPv4 or IPv6 address is required');
+    if (ipAddress === normalizeIpAddress(adminIpAddress)) {
+      throw new BadRequestException('You cannot block the IP address used by your current admin session');
+    }
+
+    const blocked = await this.blockedIpModel.findOneAndUpdate(
+      { ipAddress },
+      { $set: { reason, blockedBy: new Types.ObjectId(adminId), isActive: true, unblockedAt: null, unblockedBy: null } },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+
+    await this.auditService.logAdminAction(
+      adminId,
+      AuditAction.ADMIN_IP_BLOCKED,
+      `Blocked app access from IP ${ipAddress}`,
+      { resource: AuditResource.USER, meta: { ipAddress, reason } },
+    );
+    return blocked;
+  }
+
+  async unblockIpAddress(adminId: string, rawIpAddress: string) {
+    const ipAddress = normalizeIpAddress(rawIpAddress);
+    if (!ipAddress) throw new BadRequestException('A valid IPv4 or IPv6 address is required');
+
+    const blocked = await this.blockedIpModel.findOneAndUpdate(
+      { ipAddress, isActive: true },
+      { $set: { isActive: false, unblockedAt: new Date(), unblockedBy: new Types.ObjectId(adminId) } },
+      { new: true },
+    );
+    if (!blocked) throw new NotFoundException('Active IP block not found');
+
+    await this.auditService.logAdminAction(
+      adminId,
+      AuditAction.ADMIN_IP_UNBLOCKED,
+      `Unblocked app access from IP ${ipAddress}`,
+      { resource: AuditResource.USER, meta: { ipAddress } },
+    );
+    return blocked;
   }
 
   /**

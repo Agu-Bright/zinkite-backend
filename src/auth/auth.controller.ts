@@ -62,6 +62,11 @@ export class AuthController {
 
   @Public()
   @Post("register")
+  @Throttle({
+    short: { limit: 1, ttl: 30 * 60 * 1000 },
+    medium: { limit: 1, ttl: 30 * 60 * 1000 },
+    long: { limit: 1, ttl: 30 * 60 * 1000 },
+  })
   @ApiOperation({ summary: "Register a new user with email" })
   @ApiResponse({
     status: 201,
@@ -74,6 +79,10 @@ export class AuthController {
     },
   })
   @ApiResponse({ status: 409, description: "Email or phone already exists" })
+  @ApiResponse({
+    status: 429,
+    description: "Only one account-creation attempt is allowed every 30 minutes",
+  })
   async register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }

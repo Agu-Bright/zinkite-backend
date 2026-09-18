@@ -14,6 +14,7 @@ import { AdminController } from './admin.controller';
 // RBAC schemas
 import { AdminRole, AdminRoleSchema } from './schemas/admin-role.schema';
 import { AdminUser, AdminUserSchema } from './schemas/admin-user.schema';
+import { BlockedIp, BlockedIpSchema } from './schemas/blocked-ip.schema';
 import { WalletCreditRequest, WalletCreditRequestSchema } from './schemas/wallet-credit-request.schema';
 
 // External schemas
@@ -78,6 +79,7 @@ import { GiftCardShopCode, GiftCardShopCodeSchema } from '../giftcard-shop/schem
       { name: BankAccount.name, schema: BankAccountSchema },
       { name: AdminRole.name, schema: AdminRoleSchema },
       { name: AdminUser.name, schema: AdminUserSchema },
+      { name: BlockedIp.name, schema: BlockedIpSchema },
       { name: WalletCreditRequest.name, schema: WalletCreditRequestSchema },
       { name: ProviderHealthCheck.name, schema: ProviderHealthCheckSchema },
       { name: NotificationLog.name, schema: NotificationLogSchema },

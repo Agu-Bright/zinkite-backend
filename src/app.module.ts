@@ -10,6 +10,8 @@ import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { LoggerMiddleware } from './common/middleware/logger.middleware';
 import { IdentityThrottlerGuard } from './common/guards/identity-throttler.guard';
+import { BlockedIpGuard } from './common/guards/blocked-ip.guard';
+import { BlockedIp, BlockedIpSchema } from './admin/schemas/blocked-ip.schema';
 
 // Feature Modules
 import { CommonModule } from './common/common.module';
@@ -57,6 +59,9 @@ import { AppController } from './app.controller';
       }),
       inject: [ConfigService],
     }),
+    MongooseModule.forFeature([
+      { name: BlockedIp.name, schema: BlockedIpSchema },
+    ]),
 
     // Schedule module for cron jobs
     ScheduleModule.forRoot(),
@@ -111,6 +116,10 @@ import { AppController } from './app.controller';
   ],
   controllers: [AppController],
   providers: [
+    {
+      provide: APP_GUARD,
+      useClass: BlockedIpGuard,
+    },
     // Enforce ThrottlerModule limits on every route globally.
     // Opt out per-route with @SkipThrottle() (e.g. Paystack webhooks).
     // Loosen per-route with @Throttle({ short: { limit: N, ttl: N } }).
