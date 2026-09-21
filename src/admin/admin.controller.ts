@@ -258,7 +258,7 @@ export class AdminController {
   @ApiParam({ name: "id", description: "User ID" })
   @ApiParam({
     name: "category",
-    description: "transactions, topups, withdrawals, airtime, data, electricity, tv, giftcard-purchases, giftcard-shop, or giftcard-trades",
+    description: "transactions, topups, refunds, withdrawals, airtime, data, electricity, tv, giftcard-purchases, giftcard-shop, or giftcard-trades",
   })
   async getUserActivity(
     @Param("id") id: string,

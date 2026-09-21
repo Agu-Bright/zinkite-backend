@@ -698,6 +698,7 @@ export class AdminService {
 
     const [
       topups,
+      refunds,
       withdrawals,
       airtime,
       data,
@@ -710,6 +711,13 @@ export class AdminService {
       summarize(
         this.walletTransactionModel,
         { userId: objectUserId, category: TransactionCategory.TOPUP, isDeleted: { $ne: true } },
+        "amount",
+        ["SUCCESS"],
+        ["FAILED", "REVERSED"],
+      ),
+      summarize(
+        this.walletTransactionModel,
+        { userId: objectUserId, category: TransactionCategory.REFUND, isDeleted: { $ne: true } },
         "amount",
         ["SUCCESS"],
         ["FAILED", "REVERSED"],
@@ -751,6 +759,7 @@ export class AdminService {
       },
       activityMetrics: {
         topups,
+        refunds,
         withdrawals,
         airtime,
         data,
@@ -786,6 +795,10 @@ export class AdminService {
       case "topups":
         model = this.walletTransactionModel;
         filter = { ...filter, category: TransactionCategory.TOPUP, isDeleted: { $ne: true } };
+        break;
+      case "refunds":
+        model = this.walletTransactionModel;
+        filter = { ...filter, category: TransactionCategory.REFUND, isDeleted: { $ne: true } };
         break;
       case "withdrawals":
         model = this.withdrawalModel;
