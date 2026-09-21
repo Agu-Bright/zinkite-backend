@@ -61,6 +61,19 @@ import {
 } from "./dto";
 import { NotificationLog, NotificationLogDocument } from "./schemas/notification-log.schema";
 import { BlockedIp, BlockedIpDocument } from "./schemas/blocked-ip.schema";
+import {
+  VtuTransaction,
+  VtuTransactionDocument,
+  VtuProductType,
+} from "../vtu/schemas/vtu-transaction.schema";
+import {
+  GiftCardBuyOrder,
+  GiftCardBuyOrderDocument,
+} from "../giftcard-buy/schemas/giftcard-buy-order.schema";
+import {
+  GiftCardShopPurchase,
+  GiftCardShopPurchaseDocument,
+} from "../giftcard-shop/schemas/giftcard-shop-purchase.schema";
 import { normalizeIpAddress } from "../common/utils/client-ip";
 import { EmailService } from "../email/email.service";
 import { TransactionsQueryDto } from "../wallet/dto";
@@ -107,6 +120,12 @@ export class AdminService {
     private readonly notificationLogModel: Model<NotificationLogDocument>,
     @InjectModel(BlockedIp.name)
     private readonly blockedIpModel: Model<BlockedIpDocument>,
+    @InjectModel(VtuTransaction.name)
+    private readonly vtuTransactionModel: Model<VtuTransactionDocument>,
+    @InjectModel(GiftCardBuyOrder.name)
+    private readonly giftCardBuyOrderModel: Model<GiftCardBuyOrderDocument>,
+    @InjectModel(GiftCardShopPurchase.name)
+    private readonly giftCardShopPurchaseModel: Model<GiftCardShopPurchaseDocument>,
     @InjectConnection()
     private readonly connection: Connection,
     private readonly walletService: WalletService,
@@ -607,11 +626,15 @@ export class AdminService {
    * Get user details by ID
    */
   async getUserById(userId: string): Promise<any> {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException("Invalid user ID");
+    }
+    const objectUserId = new Types.ObjectId(userId);
     const user = await this.userModel
       // Explicit isDeleted condition bypasses the schema's normal soft-delete
       // scope for this authorized admin investigation endpoint.
       .findOne({
-        _id: new Types.ObjectId(userId),
+        _id: objectUserId,
         isDeleted: { $in: [true, false] },
       })
       .select("-passwordHash -transactionPinHash");
@@ -622,27 +645,89 @@ export class AdminService {
 
     // Get wallet info
     const wallet = await this.walletModel.findOne({
-      userId: new Types.ObjectId(userId),
+      userId: objectUserId,
     });
 
     // Get recent transactions
     const recentTransactions = await this.walletTransactionModel
       .find({
-        userId: new Types.ObjectId(userId),
+        userId: objectUserId,
         isDeleted: { $ne: true },
       })
       .sort({ createdAt: -1 })
       .limit(10);
 
-    // Get trade count
-    const tradeCount = await this.tradeModel.countDocuments({
-      userId: new Types.ObjectId(userId),
-    });
+    const summarize = async (
+      model: Model<any>,
+      match: Record<string, any>,
+      amountField: string,
+      successStatuses: string[],
+      failedStatuses: string[],
+    ) => {
+      const [summary] = await model.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            totalAmountKobo: { $sum: { $ifNull: [`$${amountField}`, 0] } },
+            successful: { $sum: { $cond: [{ $in: ["$status", successStatuses] }, 1, 0] } },
+            failed: { $sum: { $cond: [{ $in: ["$status", failedStatuses] }, 1, 0] } },
+            pending: {
+              $sum: {
+                $cond: [
+                  { $not: [{ $in: ["$status", [...successStatuses, ...failedStatuses]] }] },
+                  1,
+                  0,
+                ],
+              },
+            },
+          },
+        },
+      ]);
+      const totalAmountKobo = summary?.totalAmountKobo ?? 0;
+      return {
+        count: summary?.count ?? 0,
+        totalAmountKobo,
+        totalAmountNaira: toNaira(totalAmountKobo),
+        successful: summary?.successful ?? 0,
+        failed: summary?.failed ?? 0,
+        pending: summary?.pending ?? 0,
+      };
+    };
+
+    const [
+      topups,
+      withdrawals,
+      airtime,
+      data,
+      electricity,
+      tv,
+      giftCardPurchases,
+      giftCardShop,
+      giftCardTrades,
+    ] = await Promise.all([
+      summarize(
+        this.walletTransactionModel,
+        { userId: objectUserId, category: TransactionCategory.TOPUP, isDeleted: { $ne: true } },
+        "amount",
+        ["SUCCESS"],
+        ["FAILED", "REVERSED"],
+      ),
+      summarize(this.withdrawalModel, { userId: objectUserId }, "amount", ["SUCCESS"], ["FAILED", "REJECTED", "REVERSED"]),
+      summarize(this.vtuTransactionModel, { userId: objectUserId, type: VtuProductType.AIRTIME }, "amount", ["SUCCESS"], ["FAILED", "REFUNDED"]),
+      summarize(this.vtuTransactionModel, { userId: objectUserId, type: VtuProductType.DATA }, "amount", ["SUCCESS"], ["FAILED", "REFUNDED"]),
+      summarize(this.vtuTransactionModel, { userId: objectUserId, type: VtuProductType.ELECTRICITY }, "amount", ["SUCCESS"], ["FAILED", "REFUNDED"]),
+      summarize(this.vtuTransactionModel, { userId: objectUserId, type: VtuProductType.TV }, "amount", ["SUCCESS"], ["FAILED", "REFUNDED"]),
+      summarize(this.giftCardBuyOrderModel, { userId: objectUserId }, "totalChargedNgn", ["SUCCESS"], ["FAILED", "REFUNDED"]),
+      summarize(this.giftCardShopPurchaseModel, { userId: objectUserId }, "amountChargedNgn", ["SUCCESS"], ["FAILED", "REFUNDED"]),
+      summarize(this.tradeModel, { userId: objectUserId }, "amountNgn", [TradeStatus.APPROVED], [TradeStatus.REJECTED, TradeStatus.CANCELLED]),
+    ]);
 
     // Bank accounts — surface them here so the admin can look up
     // where a user's withdrawal should go from a single detail view.
     const bankAccounts = await this.bankAccountModel
-      .find({ userId: new Types.ObjectId(userId) })
+      .find({ userId: objectUserId })
       .lean();
 
     return {
@@ -660,9 +745,90 @@ export class AdminService {
         amountNaira: toNaira(t.amount),
       })),
       stats: {
-        tradeCount,
+        tradeCount: giftCardTrades.count,
+        topupCount: topups.count,
+        totalTopupAmount: topups.totalAmountNaira,
+      },
+      activityMetrics: {
+        topups,
+        withdrawals,
+        airtime,
+        data,
+        electricity,
+        tv,
+        giftCardPurchases,
+        giftCardShop,
+        giftCardTrades,
       },
     };
+  }
+
+  async getUserActivity(
+    userId: string,
+    category: string,
+    page = 1,
+    limit = 20,
+  ): Promise<PaginatedResult<any>> {
+    if (!Types.ObjectId.isValid(userId)) throw new BadRequestException("Invalid user ID");
+    const userObjectId = new Types.ObjectId(userId);
+    const skip = calculateSkip(page, limit);
+
+    let model: Model<any>;
+    let filter: Record<string, any> = { userId: userObjectId };
+    let amountField = "amount";
+    let populate: { path: string; select: string }[] = [];
+
+    switch (category) {
+      case "transactions":
+        model = this.walletTransactionModel;
+        filter.isDeleted = { $ne: true };
+        break;
+      case "topups":
+        model = this.walletTransactionModel;
+        filter = { ...filter, category: TransactionCategory.TOPUP, isDeleted: { $ne: true } };
+        break;
+      case "withdrawals":
+        model = this.withdrawalModel;
+        break;
+      case "airtime":
+      case "data":
+      case "electricity":
+      case "tv":
+        model = this.vtuTransactionModel;
+        filter.type = category.toUpperCase();
+        break;
+      case "giftcard-purchases":
+        model = this.giftCardBuyOrderModel;
+        amountField = "totalChargedNgn";
+        break;
+      case "giftcard-shop":
+        model = this.giftCardShopPurchaseModel;
+        amountField = "amountChargedNgn";
+        break;
+      case "giftcard-trades":
+        model = this.tradeModel;
+        amountField = "amountNgn";
+        populate = [
+          { path: "brandId", select: "name logoUrl" },
+          { path: "categoryId", select: "name currency" },
+        ];
+        break;
+      default:
+        throw new BadRequestException("Unsupported activity category");
+    }
+
+    const [total, documents] = await Promise.all([
+      model.countDocuments(filter),
+      model.find(filter).populate(populate).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    ]);
+
+    const data = documents.map((document: Record<string, any>) => ({
+      ...document,
+      activityCategory: category,
+      amountNaira: toNaira(document[amountField] ?? 0),
+    }));
+
+    return paginate(data, total, page, limit);
   }
 
   /**

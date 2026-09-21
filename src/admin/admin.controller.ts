@@ -252,6 +252,28 @@ export class AdminController {
     return this.adminService.getTrades({ ...query, userId: id });
   }
 
+  @Get("users/:id/activity/:category")
+  @RequireAnyPermission("users.view", "transactions.view")
+  @ApiOperation({ summary: "Get a categorized activity history for a specific user" })
+  @ApiParam({ name: "id", description: "User ID" })
+  @ApiParam({
+    name: "category",
+    description: "transactions, topups, withdrawals, airtime, data, electricity, tv, giftcard-purchases, giftcard-shop, or giftcard-trades",
+  })
+  async getUserActivity(
+    @Param("id") id: string,
+    @Param("category") category: string,
+    @Query() query: TransactionsQueryDto,
+  ) {
+    validateObjectId(id, "user id");
+    return this.adminService.getUserActivity(
+      id,
+      category,
+      query.page ?? 1,
+      query.limit ?? 20,
+    );
+  }
+
   // ============================================
   // WALLET MANAGEMENT
   // ============================================

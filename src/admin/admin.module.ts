@@ -65,6 +65,9 @@ import { GiftCardCategory, GiftCardCategorySchema } from '../giftcards/schemas/g
 import { GiftCardRate, GiftCardRateSchema } from '../giftcards/schemas/gift-card-rate.schema';
 import { GiftCardShopProduct, GiftCardShopProductSchema } from '../giftcard-shop/schemas/giftcard-shop-product.schema';
 import { GiftCardShopCode, GiftCardShopCodeSchema } from '../giftcard-shop/schemas/giftcard-shop-code.schema';
+import { GiftCardShopPurchase, GiftCardShopPurchaseSchema } from '../giftcard-shop/schemas/giftcard-shop-purchase.schema';
+import { GiftCardBuyOrder, GiftCardBuyOrderSchema } from '../giftcard-buy/schemas/giftcard-buy-order.schema';
+import { VtuTransaction, VtuTransactionSchema } from '../vtu/schemas/vtu-transaction.schema';
 
 @Module({
   imports: [
@@ -88,6 +91,9 @@ import { GiftCardShopCode, GiftCardShopCodeSchema } from '../giftcard-shop/schem
       { name: GiftCardRate.name, schema: GiftCardRateSchema },
       { name: GiftCardShopProduct.name, schema: GiftCardShopProductSchema },
       { name: GiftCardShopCode.name, schema: GiftCardShopCodeSchema },
+      { name: GiftCardShopPurchase.name, schema: GiftCardShopPurchaseSchema },
+      { name: GiftCardBuyOrder.name, schema: GiftCardBuyOrderSchema },
+      { name: VtuTransaction.name, schema: VtuTransactionSchema },
     ]),
     JwtModule.registerAsync({
       imports: [ConfigModule],
