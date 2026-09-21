@@ -84,12 +84,66 @@ export class HttpExceptionFilter implements ExceptionFilter {
       errorResponse.details = details;
     }
 
-    // Log error for debugging
-    this.logger.warn(
-      `${request.method} ${request.url} - ${statusCode}: ${message}`,
-    );
+    // Log error for debugging.
+    //
+    // For validation failures we dump the *entire* class-validator details
+    // array — every field message, joined line-by-line so Coolify's log
+    // aggregator can't strip any of it — plus the raw request body (with
+    // secrets scrubbed) so we can see exactly what the client sent. Without
+    // this, "Validation failed" alone is useless for diagnosis.
+    const isValidationFailure =
+      statusCode === HttpStatus.BAD_REQUEST && Array.isArray(details) && details.length > 0;
+
+    if (isValidationFailure) {
+      this.logger.warn(
+        `${request.method} ${request.url} - ${statusCode}: ${message}`,
+      );
+      this.logger.warn(`===== VALIDATION ERRORS (${details.length}) =====`);
+      details.forEach((msg: any, i: number) => {
+        this.logger.warn(`  [${i + 1}] ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`);
+      });
+      // Scrub obvious secrets before logging the body — never log PIN,
+      // password, token, or OTP values verbatim.
+      const scrubbed = this.scrubBody(request.body);
+      this.logger.warn(`===== REQUEST BODY =====`);
+      this.logger.warn(JSON.stringify(scrubbed));
+      this.logger.warn(`===== END VALIDATION =====`);
+    } else {
+      this.logger.warn(
+        `${request.method} ${request.url} - ${statusCode}: ${message}`,
+      );
+    }
 
     response.status(statusCode).json(errorResponse);
+  }
+
+  /**
+   * Strip secrets from a request body before logging it. We only look one
+   * level deep — that's every case the API cares about — and replace values
+   * for known-sensitive keys with a fixed placeholder.
+   */
+  private scrubBody(body: unknown): unknown {
+    if (!body || typeof body !== 'object') return body;
+    const SECRET_KEYS = new Set([
+      'pin',
+      'transactionPin',
+      'password',
+      'newPassword',
+      'currentPassword',
+      'oldPassword',
+      'confirmPassword',
+      'otp',
+      'token',
+      'refreshToken',
+      'accessToken',
+    ]);
+    const clone: Record<string, unknown> = { ...(body as Record<string, unknown>) };
+    for (const key of Object.keys(clone)) {
+      if (SECRET_KEYS.has(key)) {
+        clone[key] = '[REDACTED]';
+      }
+    }
+    return clone;
   }
 
   /**
