@@ -66,22 +66,27 @@ import { AppController } from './app.controller';
     // Schedule module for cron jobs
     ScheduleModule.forRoot(),
 
-    // Rate limiting — default: 10 requests per 60 seconds per IP
+    // Global rate limiting — per authenticated session (see
+    // IdentityThrottlerGuard). These are GENEROUS on purpose: dashboards and
+    // the mobile home screen fan out many parallel requests on load, so tight
+    // global caps (the old 3/s · 20/min · 100/hr) produced "Too many requests"
+    // during normal use. Real brute-force protection lives on the sensitive
+    // auth/PIN routes via their own strict @Throttle() overrides.
     ThrottlerModule.forRoot([
       {
         name: 'short',
         ttl: 1000, // 1 second
-        limit: 3,  // 3 requests per second
+        limit: 30, // 30 requests/second — absorbs parallel widget/query bursts
       },
       {
         name: 'medium',
         ttl: 60000, // 1 minute
-        limit: 20,  // 20 requests per minute
+        limit: 300, // 300 requests/minute
       },
       {
         name: 'long',
         ttl: 3600000, // 1 hour
-        limit: 100,   // 100 requests per hour (for auth endpoints)
+        limit: 3000,  // 3000 requests/hour per session
       },
     ]),
 
