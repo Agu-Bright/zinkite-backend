@@ -1,14 +1,12 @@
 /**
- * Referral DTOs
+ * Referral DTOs (points-based system)
  */
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsString,
   IsNumber,
   IsOptional,
-  IsEnum,
-  IsMongoId,
-  IsDateString,
+  IsInt,
   Min,
   MinLength,
   MaxLength,
@@ -16,128 +14,12 @@ import {
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { ChallengeStatus } from '../schemas/referral-challenge.schema';
-
-// ── Admin: Create Challenge ─────────────────────────────────
-
-export class CreateChallengeDto {
-  @ApiProperty({ example: 'Refer & Win ₦25,000' })
-  @IsString()
-  @MinLength(3)
-  @MaxLength(200)
-  title: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  @MaxLength(2000)
-  description?: string;
-
-  @ApiProperty({ description: 'Reward per winner in Naira', example: 25000 })
-  @IsNumber()
-  @Min(100)
-  @Type(() => Number)
-  rewardAmount: number;
-
-  @ApiProperty({ example: 3 })
-  @IsNumber()
-  @Min(1)
-  @Type(() => Number)
-  numberOfWinners: number;
-
-  @ApiProperty({ description: 'Referrals needed to qualify', example: 50 })
-  @IsNumber()
-  @Min(1)
-  @Type(() => Number)
-  referralTarget: number;
-
-  @ApiProperty({ description: 'Min transaction amount in Naira', example: 500 })
-  @IsNumber()
-  @Min(1)
-  @Type(() => Number)
-  minTransactionAmount: number;
-
-  @ApiProperty()
-  @IsDateString()
-  startsAt: string;
-
-  @ApiProperty()
-  @IsDateString()
-  endsAt: string;
-}
-
-// ── Admin: Update Challenge ─────────────────────────────────
-
-export class UpdateChallengeDto {
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  @MinLength(3)
-  @MaxLength(200)
-  title?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  @MaxLength(2000)
-  description?: string;
-
-  @ApiPropertyOptional({ description: 'Reward per winner in Naira' })
-  @IsOptional()
-  @IsNumber()
-  @Min(100)
-  @Type(() => Number)
-  rewardAmount?: number;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  @Type(() => Number)
-  numberOfWinners?: number;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  @Type(() => Number)
-  referralTarget?: number;
-
-  @ApiPropertyOptional({ description: 'Min transaction amount in Naira' })
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  @Type(() => Number)
-  minTransactionAmount?: number;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsDateString()
-  startsAt?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsDateString()
-  endsAt?: string;
-}
-
-// ── Admin: Query Challenges ─────────────────────────────────
-
-export class ChallengesQueryDto extends PaginationDto {
-  @ApiPropertyOptional({ enum: ChallengeStatus })
-  @IsOptional()
-  @IsEnum(ChallengeStatus)
-  status?: ChallengeStatus;
-}
 
 // ── User: Query My Referrals ────────────────────────────────
 
-export class MyReferralsQueryDto extends PaginationDto {
-  @ApiPropertyOptional({ description: 'Filter by challenge ID' })
-  @IsOptional()
-  @IsMongoId()
-  challengeId?: string;
-}
+export class MyReferralsQueryDto extends PaginationDto {}
+
+// ── User: Update referral code ──────────────────────────────
 
 export class UpdateMyReferralCodeDto {
   @ApiProperty({
@@ -149,24 +31,46 @@ export class UpdateMyReferralCodeDto {
   @MinLength(4)
   @MaxLength(20)
   @Matches(/^[A-Z0-9][A-Z0-9_-]*$/, {
-    message: 'Referral code must start with a letter or number and contain only letters, numbers, hyphens, or underscores',
+    message:
+      'Referral code must start with a letter or number and contain only letters, numbers, hyphens, or underscores',
   })
   referralCode: string;
 }
 
-export class UpdateReferralSettingsDto {
-  @ApiProperty({ description: 'Reward paid per qualified referral in Naira', example: 500 })
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  rewardAmount: number;
+// ── User: Convert points → wallet ───────────────────────────
 
-  @ApiProperty({ description: 'Minimum qualifying transaction in Naira', example: 500 })
+export class ConvertPointsDto {
+  @ApiProperty({ description: 'Number of points to convert into wallet Naira', example: 100 })
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  points: number;
+}
+
+// ── Admin: Update referral settings ─────────────────────────
+
+export class UpdateReferralSettingsDto {
+  @ApiProperty({ description: 'Points earned by the referrer per successful referral', example: 10 })
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  pointsPerReferral: number;
+
+  @ApiProperty({ description: 'Value of 1 referral point in Naira', example: 50 })
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  minTransactionAmount: number;
+  pointValue: number;
+
+  @ApiPropertyOptional({ description: 'Minimum points required before a user can convert', example: 100 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  minConversionPoints?: number;
 }
+
+// ── Admin: Query referral earnings ──────────────────────────
 
 export class AdminReferralEarningsQueryDto extends PaginationDto {
   @ApiPropertyOptional({

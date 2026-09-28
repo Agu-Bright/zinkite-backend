@@ -103,6 +103,18 @@ export class User {
   referredBy: Types.ObjectId | null;
 
   /**
+   * Referral points currently available to convert into wallet Naira.
+   */
+  @Prop({ type: Number, default: 0, min: 0 })
+  referralPoints: number;
+
+  /**
+   * Lifetime referral points ever earned (never decreases; for stats).
+   */
+  @Prop({ type: Number, default: 0, min: 0 })
+  referralPointsEarned: number;
+
+  /**
    * Soft delete flag
    */
   @Prop({ type: Boolean, default: false })

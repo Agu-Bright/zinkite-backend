@@ -127,18 +127,17 @@ export class WalletService {
     return this._referralService;
   }
 
+  /**
+   * No-op. Referral points are now awarded at signup (see ReferralService),
+   * not on transactions. Kept so the many callers across the transaction flows
+   * don't need to change; safe to remove those calls over time.
+   */
   async checkReferralQualification(
-    userId: string,
-    amountKobo: number,
-    transactionId?: Types.ObjectId,
+    _userId: string,
+    _amountKobo: number,
+    _transactionId?: Types.ObjectId,
   ): Promise<void> {
-    const referralService = this.getReferralService();
-    if (!referralService) return;
-    await referralService.checkAndQualifyReferral(
-      userId,
-      amountKobo,
-      transactionId,
-    );
+    return;
   }
 
   /**

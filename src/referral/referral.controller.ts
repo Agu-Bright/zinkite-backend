@@ -1,15 +1,14 @@
 /**
  * Referral Controller (User-facing)
  *
- * Endpoints for users to view challenges, leaderboard,
- * their referrals, and their referral code.
+ * Points-based: view code + points, convert points to wallet, list referrals.
  */
 import {
   Controller,
   Get,
+  Post,
   Patch,
   Body,
-  Param,
   Query,
   Req,
   UseGuards,
@@ -17,70 +16,32 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { ReferralService } from './referral.service';
-import { MyReferralsQueryDto, UpdateMyReferralCodeDto } from './dto';
+import {
+  MyReferralsQueryDto,
+  UpdateMyReferralCodeDto,
+  ConvertPointsDto,
+} from './dto';
 
 @ApiTags('Referral')
 @ApiBearerAuth('JWT-auth')
 @UseGuards(AuthGuard('jwt'))
 @Controller('referral')
 export class ReferralController {
-  constructor(
-    private readonly referralService: ReferralService,
-  ) {}
+  constructor(private readonly referralService: ReferralService) {}
 
+  /** Public reward config (points per referral, ₦ per point). */
   @Get('settings')
   async getSettings() {
     return this.referralService.getReferralSettings();
   }
 
-  /**
-   * Get active challenges with user's progress
-   */
-  @Get('challenges/active')
-  async getActiveChallenges(@Req() req: any) {
+  /** Everything the referral hub needs: code, points, value, counts. */
+  @Get('summary')
+  async getSummary(@Req() req: any) {
     const userId = req.user.userId || req.user.sub;
-    return this.referralService.getActiveChallengesForUser(userId);
+    return this.referralService.getMySummary(userId);
   }
 
-  /**
-   * Get challenge detail with user's progress
-   */
-  @Get('challenges/:id')
-  async getChallengeDetail(
-    @Req() req: any,
-    @Param('id') id: string,
-  ) {
-    const userId = req.user.userId || req.user.sub;
-    return this.referralService.getChallengeForUser(id, userId);
-  }
-
-  /**
-   * Get leaderboard for a challenge
-   */
-  @Get('challenges/:id/leaderboard')
-  async getLeaderboard(
-    @Req() req: any,
-    @Param('id') id: string,
-  ) {
-    const userId = req.user.userId || req.user.sub;
-    return this.referralService.getLeaderboard(id, userId);
-  }
-
-  /**
-   * Get user's referral list
-   */
-  @Get('my-referrals')
-  async getMyReferrals(
-    @Req() req: any,
-    @Query() query: MyReferralsQueryDto,
-  ) {
-    const userId = req.user.userId || req.user.sub;
-    return this.referralService.getMyReferrals(userId, query);
-  }
-
-  /**
-   * Get user's referral code
-   */
   @Get('my-code')
   async getMyCode(@Req() req: any) {
     const userId = req.user.userId || req.user.sub;
@@ -100,12 +61,22 @@ export class ReferralController {
     return { referralCode };
   }
 
-  /**
-   * Get user's referral stats
-   */
+  @Get('my-referrals')
+  async getMyReferrals(@Req() req: any, @Query() query: MyReferralsQueryDto) {
+    const userId = req.user.userId || req.user.sub;
+    return this.referralService.getMyReferrals(userId, query);
+  }
+
   @Get('stats')
   async getMyStats(@Req() req: any) {
     const userId = req.user.userId || req.user.sub;
     return this.referralService.getMyStats(userId);
+  }
+
+  @Post('convert')
+  @ApiOperation({ summary: 'Convert referral points into wallet Naira' })
+  async convert(@Req() req: any, @Body() dto: ConvertPointsDto) {
+    const userId = req.user.userId || req.user.sub;
+    return this.referralService.convertPoints(userId, dto.points);
   }
 }

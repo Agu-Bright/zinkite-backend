@@ -1,8 +1,8 @@
 /**
  * Referral Schema
  *
- * Tracks individual referral relationships: who referred whom,
- * which challenge it counts toward, and qualification status.
+ * One record per "referrer → referred user" relationship. Points are awarded
+ * to the referrer immediately when the referred user signs up with their code.
  */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
@@ -10,73 +10,37 @@ import { Document, Types } from 'mongoose';
 export type ReferralDocument = Referral & Document;
 
 export enum ReferralStatus {
-  PENDING = 'PENDING',
-  QUALIFIED = 'QUALIFIED',
-  EXPIRED = 'EXPIRED',
-}
-
-export enum ReferralRewardStatus {
-  PENDING = 'PENDING',
-  PROCESSING = 'PROCESSING',
-  PAID = 'PAID',
-  FAILED = 'FAILED',
-  NOT_APPLICABLE = 'NOT_APPLICABLE',
+  /** Points have been awarded to the referrer. */
+  EARNED = 'EARNED',
+  /** Reversed (e.g. fraud / referred account deleted). */
+  REVERSED = 'REVERSED',
 }
 
 @Schema({ timestamps: true, collection: 'referrals' })
 export class Referral {
-  /** The user who shared the referral code */
+  /** The user who shared the referral code (receives the points). */
   @Prop({ type: Types.ObjectId, ref: 'User', required: true, index: true })
   referrerId: Types.ObjectId;
 
-  /** The new user who signed up with the code */
+  /** The new user who signed up with the code. */
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   referredUserId: Types.ObjectId;
 
-  /** Challenge active at time of signup (null if no active challenge) */
-  @Prop({ type: Types.ObjectId, ref: 'ReferralChallenge', default: null })
-  challengeId: Types.ObjectId | null;
-
-  /** The referral code that was used */
+  /** The referral code that was used. */
   @Prop({ required: true })
   referralCode: string;
 
   @Prop({
     type: String,
     enum: Object.values(ReferralStatus),
-    default: ReferralStatus.PENDING,
+    default: ReferralStatus.EARNED,
     index: true,
   })
   status: ReferralStatus;
 
-  /** When the referred user met the min transaction requirement */
-  @Prop({ type: Date, default: null })
-  qualifiedAt: Date | null;
-
-  /** The transaction that qualified this referral */
-  @Prop({ type: Types.ObjectId, ref: 'WalletTransaction', default: null })
-  qualifyingTransactionId: Types.ObjectId | null;
-
-  /** Base per-referral reward captured when the referral qualifies. */
+  /** Points awarded to the referrer for this referral (snapshot at signup). */
   @Prop({ type: Number, default: 0 })
-  rewardAmountKobo: number;
-
-  @Prop({
-    type: String,
-    enum: Object.values(ReferralRewardStatus),
-    default: ReferralRewardStatus.PENDING,
-    index: true,
-  })
-  rewardStatus: ReferralRewardStatus;
-
-  @Prop({ type: Date, default: null })
-  rewardedAt: Date | null;
-
-  @Prop({ type: Types.ObjectId, ref: 'WalletTransaction', default: null })
-  rewardTransactionId: Types.ObjectId | null;
-
-  @Prop({ type: String, default: null })
-  rewardFailureReason: string | null;
+  pointsAwarded: number;
 
   createdAt: Date;
   updatedAt: Date;
@@ -84,7 +48,7 @@ export class Referral {
 
 export const ReferralSchema = SchemaFactory.createForClass(Referral);
 
+// A given user can only ever be referred once.
 ReferralSchema.index({ referredUserId: 1 }, { unique: true });
-ReferralSchema.index({ referrerId: 1, challengeId: 1 });
+ReferralSchema.index({ referrerId: 1, createdAt: -1 });
 ReferralSchema.index({ referralCode: 1 });
-ReferralSchema.index({ status: 1 });
