@@ -49,17 +49,21 @@ import { UsersService } from '../users/users.service';
 const KEY_POINTS_PER_REFERRAL = 'referral_points_per_referral';
 const KEY_POINT_VALUE_KOBO = 'referral_point_value_kobo';
 const KEY_MIN_CONVERSION_POINTS = 'referral_min_conversion_points';
+const KEY_MIN_QUALIFYING_KOBO = 'referral_min_qualifying_amount_kobo';
 
 // Defaults if an admin has not configured anything yet
 const DEFAULT_POINTS_PER_REFERRAL = 10;
 const DEFAULT_POINT_VALUE_KOBO = 5000; // ₦50 per point
 const DEFAULT_MIN_CONVERSION_POINTS = 0;
+const DEFAULT_MIN_QUALIFYING_KOBO = 0; // 0 = any successful transaction qualifies
 
 export interface ReferralSettings {
   pointsPerReferral: number;
   pointValueKobo: number;
   pointValue: number; // Naira, convenience for clients
   minConversionPoints: number;
+  minQualifyingAmountKobo: number;
+  minQualifyingAmount: number; // Naira, convenience for clients
 }
 
 @Injectable()
@@ -144,7 +148,7 @@ export class ReferralService {
   // ═══════════════════════════════════════════════════════════
 
   async getReferralSettings(): Promise<ReferralSettings> {
-    const [pointsPerReferral, pointValueKobo, minConversionPoints] =
+    const [pointsPerReferral, pointValueKobo, minConversionPoints, minQualifyingKobo] =
       await Promise.all([
         this.settingsService.getValue<number>(
           KEY_POINTS_PER_REFERRAL,
@@ -158,14 +162,21 @@ export class ReferralService {
           KEY_MIN_CONVERSION_POINTS,
           DEFAULT_MIN_CONVERSION_POINTS,
         ),
+        this.settingsService.getValue<number>(
+          KEY_MIN_QUALIFYING_KOBO,
+          DEFAULT_MIN_QUALIFYING_KOBO,
+        ),
       ]);
 
     const kobo = Math.max(0, Math.round(Number(pointValueKobo) || 0));
+    const minQ = Math.max(0, Math.round(Number(minQualifyingKobo) || 0));
     return {
       pointsPerReferral: Math.max(0, Math.round(Number(pointsPerReferral) || 0)),
       pointValueKobo: kobo,
       pointValue: toNaira(kobo),
       minConversionPoints: Math.max(0, Math.round(Number(minConversionPoints) || 0)),
+      minQualifyingAmountKobo: minQ,
+      minQualifyingAmount: toNaira(minQ),
     };
   }
 
@@ -186,6 +197,10 @@ export class ReferralService {
           key: KEY_MIN_CONVERSION_POINTS,
           value: Math.max(0, Math.round(dto.minConversionPoints ?? 0)),
         },
+        {
+          key: KEY_MIN_QUALIFYING_KOBO,
+          value: toKobo(dto.minQualifyingAmount ?? 0),
+        },
       ],
     });
 
@@ -193,12 +208,13 @@ export class ReferralService {
   }
 
   // ═══════════════════════════════════════════════════════════
-  // EARNING (on signup)
+  // EARNING (signup → pending, first transaction → earned)
   // ═══════════════════════════════════════════════════════════
 
   /**
    * Called from the registration flow when a new user signs up with a code.
-   * Awards the configured points to the referrer immediately.
+   * Records a PENDING referral — the referrer earns points only after the
+   * referred user completes a successful transaction (see qualifyReferral).
    */
   async createReferral(
     referrerId: Types.ObjectId,
@@ -206,36 +222,85 @@ export class ReferralService {
     referralCode: string,
     session?: ClientSession,
   ): Promise<ReferralDocument> {
-    // Guard against self-referral (defensive; a new signup can't be an
-    // existing user, but never award a user for referring themselves).
+    // Guard against self-referral (defensive).
     if (referrerId.toString() === referredUserId.toString()) {
       throw new BadRequestException('You cannot refer yourself');
     }
-
-    const settings = await this.getReferralSettings();
-    const points = settings.pointsPerReferral;
 
     const referral = new this.referralModel({
       referrerId,
       referredUserId,
       referralCode: referralCode.trim().toUpperCase(),
-      status: ReferralStatus.EARNED,
-      pointsAwarded: points,
+      status: ReferralStatus.PENDING,
+      pointsAwarded: 0,
     });
     const saved = await referral.save(session ? { session } : undefined);
 
+    // Let the referrer know someone used their code (points come after the
+    // referred user transacts). Fire-and-forget.
+    void this.notificationsService.sendToUser(
+      referrerId.toString(),
+      'Someone used your referral code',
+      "A new user signed up with your code. You'll earn points once they make their first transaction.",
+      { type: 'referral_signup' },
+      NotificationType.TRANSACTION,
+      'referral_signup',
+    );
+
+    this.logger.log(
+      `Referral (pending): referrer ${referrerId} ← referred ${referredUserId}`,
+    );
+    return saved;
+  }
+
+  /**
+   * Called after a referred user completes a successful transaction. Awards
+   * the configured points to the referrer if the referral is still PENDING and
+   * the transaction meets the minimum qualifying amount. Idempotent + safe
+   * against concurrent transactions (atomic status claim).
+   */
+  async qualifyReferral(
+    userId: string,
+    transactionAmountKobo: number,
+    transactionId?: Types.ObjectId,
+  ): Promise<void> {
+    const pending = await this.referralModel.findOne({
+      referredUserId: new Types.ObjectId(userId),
+      status: ReferralStatus.PENDING,
+    });
+    if (!pending) return; // not a referred user, or already earned
+
+    const settings = await this.getReferralSettings();
+    if (transactionAmountKobo < settings.minQualifyingAmountKobo) return;
+
+    const points = settings.pointsPerReferral;
+
+    // Atomically claim the qualification so two concurrent transactions can't
+    // both award points for the same referral.
+    const referral = await this.referralModel.findOneAndUpdate(
+      { _id: pending._id, status: ReferralStatus.PENDING },
+      {
+        $set: {
+          status: ReferralStatus.EARNED,
+          qualifiedAt: new Date(),
+          qualifyingTransactionId: transactionId || null,
+          pointsAwarded: points,
+        },
+      },
+      { new: true },
+    );
+    if (!referral) return; // claimed by a concurrent call
+
     if (points > 0) {
       await this.userModel.updateOne(
-        { _id: referrerId },
+        { _id: referral.referrerId },
         { $inc: { referralPoints: points, referralPointsEarned: points } },
-        session ? { session } : {},
       );
 
-      // Notify the referrer (fire-and-forget; uses its own connection).
       void this.notificationsService.sendToUser(
-        referrerId.toString(),
+        referral.referrerId.toString(),
         'You earned referral points!',
-        `You earned ${points} point${points === 1 ? '' : 's'} because someone signed up with your referral code.`,
+        `You earned ${points} point${points === 1 ? '' : 's'} — someone you referred just made a transaction.`,
         { type: 'referral_points' },
         NotificationType.TRANSACTION,
         'referral_points',
@@ -243,9 +308,8 @@ export class ReferralService {
     }
 
     this.logger.log(
-      `Referral recorded: referrer ${referrerId} earned ${points} pts (referred ${referredUserId})`,
+      `Referral qualified: referrer ${referral.referrerId} earned ${points} pts (referred ${userId})`,
     );
-    return saved;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -335,10 +399,12 @@ export class ReferralService {
     const user = await this.usersService.findById(userId);
     const settings = await this.getReferralSettings();
 
-    const totalReferrals = await this.referralModel.countDocuments({
-      referrerId: new Types.ObjectId(userId),
-      status: ReferralStatus.EARNED,
-    });
+    const referrerId = new Types.ObjectId(userId);
+    const [totalReferrals, earnedReferrals, pendingReferrals] = await Promise.all([
+      this.referralModel.countDocuments({ referrerId }),
+      this.referralModel.countDocuments({ referrerId, status: ReferralStatus.EARNED }),
+      this.referralModel.countDocuments({ referrerId, status: ReferralStatus.PENDING }),
+    ]);
 
     const points = user?.referralPoints || 0;
     return {
@@ -346,10 +412,13 @@ export class ReferralService {
       points,
       pointsEarnedLifetime: user?.referralPointsEarned || 0,
       totalReferrals,
+      earnedReferrals,
+      pendingReferrals,
       pointValueKobo: settings.pointValueKobo,
       pointValue: settings.pointValue,
       pointsPerReferral: settings.pointsPerReferral,
       minConversionPoints: settings.minConversionPoints,
+      minQualifyingAmount: settings.minQualifyingAmount,
       convertibleAmountKobo: points * settings.pointValueKobo,
       convertibleAmountNaira: toNaira(points * settings.pointValueKobo),
     };
@@ -358,13 +427,17 @@ export class ReferralService {
   async getMyStats(userId: string) {
     const user = await this.usersService.findById(userId);
     const settings = await this.getReferralSettings();
-    const totalReferrals = await this.referralModel.countDocuments({
-      referrerId: new Types.ObjectId(userId),
-      status: ReferralStatus.EARNED,
-    });
+    const referrerId = new Types.ObjectId(userId);
+    const [totalReferrals, earnedReferrals, pendingReferrals] = await Promise.all([
+      this.referralModel.countDocuments({ referrerId }),
+      this.referralModel.countDocuments({ referrerId, status: ReferralStatus.EARNED }),
+      this.referralModel.countDocuments({ referrerId, status: ReferralStatus.PENDING }),
+    ]);
     const points = user?.referralPoints || 0;
     return {
       totalReferrals,
+      earnedReferrals,
+      pendingReferrals,
       points,
       pointsEarnedLifetime: user?.referralPointsEarned || 0,
       pointValueKobo: settings.pointValueKobo,
@@ -395,8 +468,10 @@ export class ReferralService {
   // ═══════════════════════════════════════════════════════════
 
   async getAdminStats() {
-    const [totalReferrals, pointsAgg, walletAgg] = await Promise.all([
+    const [totalReferrals, earnedReferrals, pendingReferrals, pointsAgg, walletAgg] = await Promise.all([
+      this.referralModel.countDocuments({}),
       this.referralModel.countDocuments({ status: ReferralStatus.EARNED }),
+      this.referralModel.countDocuments({ status: ReferralStatus.PENDING }),
       this.userModel.aggregate([
         {
           $group: {
@@ -421,6 +496,8 @@ export class ReferralService {
 
     return {
       totalReferrals,
+      earnedReferrals,
+      pendingReferrals,
       outstandingPoints,
       lifetimePointsAwarded: pointsAgg[0]?.lifetimePoints || 0,
       outstandingLiabilityKobo: outstandingPoints * settings.pointValueKobo,
@@ -433,11 +510,16 @@ export class ReferralService {
     const { page = 1, limit = 20, search } = query;
 
     const pipeline: any[] = [
-      { $match: { status: ReferralStatus.EARNED } },
       {
         $group: {
           _id: '$referrerId',
           totalReferrals: { $sum: 1 },
+          earnedReferrals: {
+            $sum: { $cond: [{ $eq: ['$status', ReferralStatus.EARNED] }, 1, 0] },
+          },
+          pendingReferrals: {
+            $sum: { $cond: [{ $eq: ['$status', ReferralStatus.PENDING] }, 1, 0] },
+          },
           pointsFromReferrals: { $sum: '$pointsAwarded' },
         },
       },
@@ -475,6 +557,8 @@ export class ReferralService {
         phone: '$user.phone',
         referralCode: { $ifNull: ['$user.referralCode', ''] },
         totalReferrals: 1,
+        earnedReferrals: 1,
+        pendingReferrals: 1,
         pointsBalance: { $ifNull: ['$user.referralPoints', 0] },
         pointsEarnedLifetime: { $ifNull: ['$user.referralPointsEarned', 0] },
       },

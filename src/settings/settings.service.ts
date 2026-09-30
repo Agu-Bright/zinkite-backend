@@ -167,6 +167,15 @@ const DEFAULT_SETTINGS: DefaultSetting[] = [
     description: 'Minimum points a user must have before converting to wallet Naira',
     valueType: 'number',
   },
+  {
+    key: 'referral_min_qualifying_amount_kobo',
+    value: 0,
+    category: SettingCategory.GENERAL,
+    isPublic: true,
+    description:
+      'Minimum transaction (kobo) a referred user must make before the referrer earns points. 0 = any successful transaction qualifies',
+    valueType: 'number',
+  },
 ];
 
 @Injectable()

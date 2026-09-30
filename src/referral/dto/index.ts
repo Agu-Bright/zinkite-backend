@@ -68,6 +68,17 @@ export class UpdateReferralSettingsDto {
   @Min(0)
   @Type(() => Number)
   minConversionPoints?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Minimum transaction (₦) the referred user must make before the referrer earns points. 0 = any successful transaction qualifies.',
+    example: 0,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  minQualifyingAmount?: number;
 }
 
 // ── Admin: Query referral earnings ──────────────────────────
