@@ -133,9 +133,12 @@ export class AuthService {
     const session = await this.connection.startSession();
     session.startTransaction();
 
+    let newUserId!: Types.ObjectId;
+    let referredBy: Types.ObjectId | undefined;
+    let usedReferralCode: string | undefined;
+
     try {
-      // Resolve referrer if referral code provided
-      let referredBy: Types.ObjectId | undefined;
+      // Resolve referrer if a referral code was provided.
       if (dto.referralCode) {
         const normalizedReferralCode = dto.referralCode.trim().toUpperCase();
         const referrer = await this.usersService.findByReferralCode(
@@ -145,13 +148,13 @@ export class AuthService {
           throw new BadRequestException('Invalid referral code');
         }
         referredBy = referrer._id;
-        dto.referralCode = normalizedReferralCode;
+        usedReferralCode = normalizedReferralCode;
       }
 
       // Generate unique referral code for new user
       const referralCode = await this.generateUniqueReferralCode();
 
-      // Create user
+      // Create user (referredBy is stored now; the bonus is granted below).
       const user = await this.usersService.create(
         {
           email: dto.email,
@@ -164,19 +167,10 @@ export class AuthService {
         },
         session,
       );
+      newUserId = user._id;
 
       // Create wallet for user
       await this.walletService.createWallet(user._id, session);
-
-      // Create referral record if user was referred
-      if (referredBy && dto.referralCode) {
-        await this.referralService.createReferral(
-          referredBy,
-          user._id,
-          dto.referralCode,
-          session,
-        );
-      }
 
       // Generate and send OTP
       const otp = await this.otpService.generate(
@@ -191,19 +185,35 @@ export class AuthService {
       });
 
       await session.commitTransaction();
-
       this.logger.log(`User registered: ${user._id}`);
-
-      return {
-        message: "Registration successful. Please verify your email.",
-        userId: user._id.toString(),
-      };
     } catch (error) {
       await session.abortTransaction();
       throw error;
     } finally {
       session.endSession();
     }
+
+    // Referral bonus — done AFTER the signup transaction commits, and never
+    // allowed to fail registration. (Writing the referral inside the txn could
+    // abort signup, e.g. MongoDB forbids creating the collection in a txn.)
+    if (referredBy && usedReferralCode) {
+      try {
+        await this.referralService.createReferral(
+          referredBy,
+          newUserId,
+          usedReferralCode,
+        );
+      } catch (err: any) {
+        this.logger.error(
+          `Referral bonus failed for user ${newUserId} (code ${usedReferralCode}): ${err.message}`,
+        );
+      }
+    }
+
+    return {
+      message: 'Registration successful. Please verify your email.',
+      userId: newUserId.toString(),
+    };
   }
 
   // =====================

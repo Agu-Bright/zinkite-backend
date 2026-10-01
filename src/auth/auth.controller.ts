@@ -62,10 +62,13 @@ export class AuthController {
 
   @Public()
   @Post("register")
+  // Per-IP (registration is tracked by source IP). Generous enough for shared
+  // IPs — offices, families, mobile carriers that NAT many users behind one IP
+  // — while still blocking automated bulk sign-ups.
   @Throttle({
-    short: { limit: 1, ttl: 30 * 60 * 1000 },
-    medium: { limit: 1, ttl: 30 * 60 * 1000 },
-    long: { limit: 1, ttl: 30 * 60 * 1000 },
+    short: { limit: 5, ttl: 60 * 1000 }, // 5 sign-ups per minute per IP
+    medium: { limit: 30, ttl: 60 * 60 * 1000 }, // 30 sign-ups per hour per IP
+    long: { limit: 100, ttl: 24 * 60 * 60 * 1000 }, // 100 per day per IP
   })
   @ApiOperation({ summary: "Register a new user with email" })
   @ApiResponse({
@@ -81,7 +84,7 @@ export class AuthController {
   @ApiResponse({ status: 409, description: "Email or phone already exists" })
   @ApiResponse({
     status: 429,
-    description: "Only one account-creation attempt is allowed every 30 minutes",
+    description: "Too many account-creation attempts from this network",
   })
   async register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
