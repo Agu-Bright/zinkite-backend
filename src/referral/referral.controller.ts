@@ -79,4 +79,11 @@ export class ReferralController {
     const userId = req.user.userId || req.user.sub;
     return this.referralService.convertPoints(userId, dto.points);
   }
+
+  @Post('acknowledge-reward')
+  @ApiOperation({ summary: 'Mark the referee reward celebration as seen' })
+  async acknowledgeReward(@Req() req: any) {
+    const userId = req.user.userId || req.user.sub;
+    return this.referralService.acknowledgeRefereeReward(userId);
+  }
 }

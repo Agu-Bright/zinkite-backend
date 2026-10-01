@@ -47,23 +47,26 @@ import { UsersService } from '../users/users.service';
 
 // Settings keys
 const KEY_POINTS_PER_REFERRAL = 'referral_points_per_referral';
+const KEY_REFEREE_POINTS = 'referral_referee_points';
 const KEY_POINT_VALUE_KOBO = 'referral_point_value_kobo';
 const KEY_MIN_CONVERSION_POINTS = 'referral_min_conversion_points';
-const KEY_MIN_QUALIFYING_KOBO = 'referral_min_qualifying_amount_kobo';
+const KEY_UNLOCK_THRESHOLD_KOBO = 'referral_unlock_threshold_kobo';
 
 // Defaults if an admin has not configured anything yet
 const DEFAULT_POINTS_PER_REFERRAL = 10;
+const DEFAULT_REFEREE_POINTS = 5;
 const DEFAULT_POINT_VALUE_KOBO = 5000; // ₦50 per point
 const DEFAULT_MIN_CONVERSION_POINTS = 0;
-const DEFAULT_MIN_QUALIFYING_KOBO = 0; // 0 = any successful transaction qualifies
+const DEFAULT_UNLOCK_THRESHOLD_KOBO = 500000; // ₦5,000 of referee transactions
 
 export interface ReferralSettings {
-  pointsPerReferral: number;
+  pointsPerReferral: number; // referrer's points
+  refereePoints: number; // new user's points
   pointValueKobo: number;
   pointValue: number; // Naira, convenience for clients
   minConversionPoints: number;
-  minQualifyingAmountKobo: number;
-  minQualifyingAmount: number; // Naira, convenience for clients
+  unlockThresholdKobo: number;
+  unlockThreshold: number; // Naira, convenience for clients
 }
 
 @Injectable()
@@ -148,35 +151,25 @@ export class ReferralService {
   // ═══════════════════════════════════════════════════════════
 
   async getReferralSettings(): Promise<ReferralSettings> {
-    const [pointsPerReferral, pointValueKobo, minConversionPoints, minQualifyingKobo] =
+    const [pointsPerReferral, refereePoints, pointValueKobo, minConversionPoints, unlockKobo] =
       await Promise.all([
-        this.settingsService.getValue<number>(
-          KEY_POINTS_PER_REFERRAL,
-          DEFAULT_POINTS_PER_REFERRAL,
-        ),
-        this.settingsService.getValue<number>(
-          KEY_POINT_VALUE_KOBO,
-          DEFAULT_POINT_VALUE_KOBO,
-        ),
-        this.settingsService.getValue<number>(
-          KEY_MIN_CONVERSION_POINTS,
-          DEFAULT_MIN_CONVERSION_POINTS,
-        ),
-        this.settingsService.getValue<number>(
-          KEY_MIN_QUALIFYING_KOBO,
-          DEFAULT_MIN_QUALIFYING_KOBO,
-        ),
+        this.settingsService.getValue<number>(KEY_POINTS_PER_REFERRAL, DEFAULT_POINTS_PER_REFERRAL),
+        this.settingsService.getValue<number>(KEY_REFEREE_POINTS, DEFAULT_REFEREE_POINTS),
+        this.settingsService.getValue<number>(KEY_POINT_VALUE_KOBO, DEFAULT_POINT_VALUE_KOBO),
+        this.settingsService.getValue<number>(KEY_MIN_CONVERSION_POINTS, DEFAULT_MIN_CONVERSION_POINTS),
+        this.settingsService.getValue<number>(KEY_UNLOCK_THRESHOLD_KOBO, DEFAULT_UNLOCK_THRESHOLD_KOBO),
       ]);
 
     const kobo = Math.max(0, Math.round(Number(pointValueKobo) || 0));
-    const minQ = Math.max(0, Math.round(Number(minQualifyingKobo) || 0));
+    const unlock = Math.max(0, Math.round(Number(unlockKobo) || 0));
     return {
       pointsPerReferral: Math.max(0, Math.round(Number(pointsPerReferral) || 0)),
+      refereePoints: Math.max(0, Math.round(Number(refereePoints) || 0)),
       pointValueKobo: kobo,
       pointValue: toNaira(kobo),
       minConversionPoints: Math.max(0, Math.round(Number(minConversionPoints) || 0)),
-      minQualifyingAmountKobo: minQ,
-      minQualifyingAmount: toNaira(minQ),
+      unlockThresholdKobo: unlock,
+      unlockThreshold: toNaira(unlock),
     };
   }
 
@@ -185,22 +178,11 @@ export class ReferralService {
   ): Promise<ReferralSettings> {
     await this.settingsService.bulkUpdate({
       settings: [
-        {
-          key: KEY_POINTS_PER_REFERRAL,
-          value: Math.max(0, Math.round(dto.pointsPerReferral)),
-        },
-        {
-          key: KEY_POINT_VALUE_KOBO,
-          value: toKobo(dto.pointValue),
-        },
-        {
-          key: KEY_MIN_CONVERSION_POINTS,
-          value: Math.max(0, Math.round(dto.minConversionPoints ?? 0)),
-        },
-        {
-          key: KEY_MIN_QUALIFYING_KOBO,
-          value: toKobo(dto.minQualifyingAmount ?? 0),
-        },
+        { key: KEY_POINTS_PER_REFERRAL, value: Math.max(0, Math.round(dto.pointsPerReferral)) },
+        { key: KEY_REFEREE_POINTS, value: Math.max(0, Math.round(dto.refereePoints)) },
+        { key: KEY_POINT_VALUE_KOBO, value: toKobo(dto.pointValue) },
+        { key: KEY_MIN_CONVERSION_POINTS, value: Math.max(0, Math.round(dto.minConversionPoints ?? 0)) },
+        { key: KEY_UNLOCK_THRESHOLD_KOBO, value: toKobo(dto.unlockThreshold ?? 0) },
       ],
     });
 
@@ -213,8 +195,9 @@ export class ReferralService {
 
   /**
    * Called from the registration flow when a new user signs up with a code.
-   * Records a PENDING referral — the referrer earns points only after the
-   * referred user completes a successful transaction (see qualifyReferral).
+   * Grants BOTH the referrer and the referee their bonus points, held LOCKED
+   * until the referee transacts up to the threshold (or immediately if the
+   * threshold is 0).
    */
   async createReferral(
     referrerId: Types.ObjectId,
@@ -222,85 +205,69 @@ export class ReferralService {
     referralCode: string,
     session?: ClientSession,
   ): Promise<ReferralDocument> {
-    // Guard against self-referral (defensive).
     if (referrerId.toString() === referredUserId.toString()) {
       throw new BadRequestException('You cannot refer yourself');
     }
+
+    const settings = await this.getReferralSettings();
+    const referrerPts = settings.pointsPerReferral;
+    const refereePts = settings.refereePoints;
+    const threshold = settings.unlockThresholdKobo;
+    const unlockNow = threshold <= 0; // no transaction required
 
     const referral = new this.referralModel({
       referrerId,
       referredUserId,
       referralCode: referralCode.trim().toUpperCase(),
-      status: ReferralStatus.PENDING,
-      pointsAwarded: 0,
+      status: unlockNow ? ReferralStatus.UNLOCKED : ReferralStatus.LOCKED,
+      referrerPoints: referrerPts,
+      refereePoints: refereePts,
+      refereeTxnTotalKobo: 0,
+      unlockThresholdKobo: threshold,
+      unlockedAt: unlockNow ? new Date() : null,
+      refereeAcknowledged: false,
     });
     const saved = await referral.save(session ? { session } : undefined);
 
-    // Let the referrer know someone used their code (points come after the
-    // referred user transacts). Fire-and-forget.
-    void this.notificationsService.sendToUser(
-      referrerId.toString(),
-      'Someone used your referral code',
-      "A new user signed up with your code. You'll earn points once they make their first transaction.",
-      { type: 'referral_signup' },
-      NotificationType.TRANSACTION,
-      'referral_signup',
-    );
+    const opt: any = session ? { session } : {};
+    const bucket = unlockNow ? 'referralPoints' : 'referralPointsLocked';
 
-    this.logger.log(
-      `Referral (pending): referrer ${referrerId} ← referred ${referredUserId}`,
-    );
-    return saved;
-  }
-
-  /**
-   * Called after a referred user completes a successful transaction. Awards
-   * the configured points to the referrer if the referral is still PENDING and
-   * the transaction meets the minimum qualifying amount. Idempotent + safe
-   * against concurrent transactions (atomic status claim).
-   */
-  async qualifyReferral(
-    userId: string,
-    transactionAmountKobo: number,
-    transactionId?: Types.ObjectId,
-  ): Promise<void> {
-    const pending = await this.referralModel.findOne({
-      referredUserId: new Types.ObjectId(userId),
-      status: ReferralStatus.PENDING,
-    });
-    if (!pending) return; // not a referred user, or already earned
-
-    const settings = await this.getReferralSettings();
-    if (transactionAmountKobo < settings.minQualifyingAmountKobo) return;
-
-    const points = settings.pointsPerReferral;
-
-    // Atomically claim the qualification so two concurrent transactions can't
-    // both award points for the same referral.
-    const referral = await this.referralModel.findOneAndUpdate(
-      { _id: pending._id, status: ReferralStatus.PENDING },
-      {
-        $set: {
-          status: ReferralStatus.EARNED,
-          qualifiedAt: new Date(),
-          qualifyingTransactionId: transactionId || null,
-          pointsAwarded: points,
-        },
-      },
-      { new: true },
-    );
-    if (!referral) return; // claimed by a concurrent call
-
-    if (points > 0) {
+    if (referrerPts > 0) {
       await this.userModel.updateOne(
-        { _id: referral.referrerId },
-        { $inc: { referralPoints: points, referralPointsEarned: points } },
+        { _id: referrerId },
+        { $inc: { [bucket]: referrerPts, referralPointsEarned: referrerPts } },
+        opt,
       );
+    }
+    if (refereePts > 0) {
+      await this.userModel.updateOne(
+        { _id: referredUserId },
+        { $inc: { [bucket]: refereePts, referralPointsEarned: refereePts } },
+        opt,
+      );
+    }
 
+    // Notify the referrer.
+    if (referrerPts > 0) {
       void this.notificationsService.sendToUser(
-        referral.referrerId.toString(),
-        'You earned referral points!',
-        `You earned ${points} point${points === 1 ? '' : 's'} — someone you referred just made a transaction.`,
+        referrerId.toString(),
+        'Someone used your referral code!',
+        unlockNow
+          ? `You earned ${referrerPts} referral point${referrerPts === 1 ? '' : 's'}.`
+          : `You earned ${referrerPts} referral point${referrerPts === 1 ? '' : 's'} — they'll unlock once your referral transacts.`,
+        { type: 'referral_points' },
+        NotificationType.TRANSACTION,
+        'referral_points',
+      );
+    }
+    // Notify the referee (the in-app confetti is the main celebration).
+    if (refereePts > 0) {
+      void this.notificationsService.sendToUser(
+        referredUserId.toString(),
+        'You earned a referral reward! 🎉',
+        unlockNow
+          ? `You earned ${refereePts} referral point${refereePts === 1 ? '' : 's'}.`
+          : `You earned ${refereePts} referral point${refereePts === 1 ? '' : 's'} — make a transaction to unlock them.`,
         { type: 'referral_points' },
         NotificationType.TRANSACTION,
         'referral_points',
@@ -308,8 +275,81 @@ export class ReferralService {
     }
 
     this.logger.log(
-      `Referral qualified: referrer ${referral.referrerId} earned ${points} pts (referred ${userId})`,
+      `Referral created: referrer ${referrerId} (+${referrerPts}) / referee ${referredUserId} (+${refereePts}) — ${unlockNow ? 'UNLOCKED' : 'LOCKED'}`,
     );
+    return saved;
+  }
+
+  /**
+   * Called after a referred user completes a successful transaction. Adds the
+   * amount toward their unlock progress and, once the threshold is reached,
+   * UNLOCKS the bonus for BOTH the referrer and the referee. Idempotent + safe
+   * against concurrent transactions.
+   */
+  async qualifyReferral(
+    userId: string,
+    transactionAmountKobo: number,
+    _transactionId?: Types.ObjectId,
+  ): Promise<void> {
+    if (!transactionAmountKobo || transactionAmountKobo <= 0) return;
+
+    // Add this transaction toward the referee's unlock progress.
+    const ref = await this.referralModel.findOneAndUpdate(
+      { referredUserId: new Types.ObjectId(userId), status: ReferralStatus.LOCKED },
+      { $inc: { refereeTxnTotalKobo: transactionAmountKobo } },
+      { new: true },
+    );
+    if (!ref) return; // not a locked referee
+    if (ref.refereeTxnTotalKobo < ref.unlockThresholdKobo) return; // not enough yet
+
+    // Claim the unlock atomically.
+    const unlocked = await this.referralModel.findOneAndUpdate(
+      { _id: ref._id, status: ReferralStatus.LOCKED },
+      { $set: { status: ReferralStatus.UNLOCKED, unlockedAt: new Date() } },
+      { new: true },
+    );
+    if (!unlocked) return; // unlocked by a concurrent call
+
+    // Move locked → available for both parties.
+    if (unlocked.referrerPoints > 0) {
+      await this.userModel.updateOne(
+        { _id: unlocked.referrerId },
+        { $inc: { referralPoints: unlocked.referrerPoints, referralPointsLocked: -unlocked.referrerPoints } },
+      );
+      void this.notificationsService.sendToUser(
+        unlocked.referrerId.toString(),
+        'Referral bonus unlocked! 🎉',
+        `Your ${unlocked.referrerPoints} referral point${unlocked.referrerPoints === 1 ? '' : 's'} are now ready to use.`,
+        { type: 'referral_points' },
+        NotificationType.TRANSACTION,
+        'referral_points',
+      );
+    }
+    if (unlocked.refereePoints > 0) {
+      await this.userModel.updateOne(
+        { _id: unlocked.referredUserId },
+        { $inc: { referralPoints: unlocked.refereePoints, referralPointsLocked: -unlocked.refereePoints } },
+      );
+      void this.notificationsService.sendToUser(
+        unlocked.referredUserId.toString(),
+        'Referral bonus unlocked! 🎉',
+        `Your ${unlocked.refereePoints} referral point${unlocked.refereePoints === 1 ? '' : 's'} are now ready to use.`,
+        { type: 'referral_points' },
+        NotificationType.TRANSACTION,
+        'referral_points',
+      );
+    }
+
+    this.logger.log(`Referral unlocked: ${unlocked._id} (referee ${userId} hit threshold)`);
+  }
+
+  /** The referee marks their celebratory reward popup as seen. */
+  async acknowledgeRefereeReward(userId: string): Promise<{ acknowledged: boolean }> {
+    await this.referralModel.updateOne(
+      { referredUserId: new Types.ObjectId(userId) },
+      { $set: { refereeAcknowledged: true } },
+    );
+    return { acknowledged: true };
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -400,27 +440,50 @@ export class ReferralService {
     const settings = await this.getReferralSettings();
 
     const referrerId = new Types.ObjectId(userId);
-    const [totalReferrals, earnedReferrals, pendingReferrals] = await Promise.all([
-      this.referralModel.countDocuments({ referrerId }),
-      this.referralModel.countDocuments({ referrerId, status: ReferralStatus.EARNED }),
-      this.referralModel.countDocuments({ referrerId, status: ReferralStatus.PENDING }),
-    ]);
+    const [totalReferrals, unlockedReferrals, lockedReferrals, myReferral] =
+      await Promise.all([
+        this.referralModel.countDocuments({ referrerId }),
+        this.referralModel.countDocuments({ referrerId, status: ReferralStatus.UNLOCKED }),
+        this.referralModel.countDocuments({ referrerId, status: ReferralStatus.LOCKED }),
+        // This user's OWN record as a referee (if they were referred).
+        this.referralModel
+          .findOne({ referredUserId: referrerId })
+          .lean(),
+      ]);
 
-    const points = user?.referralPoints || 0;
+    const points = user?.referralPoints || 0; // available/convertible
+    const lockedPoints = user?.referralPointsLocked || 0;
+
+    // The referee reward belonging to THIS user (as a referred user).
+    const refereeReward = myReferral
+      ? {
+          points: (myReferral as any).refereePoints || 0,
+          locked: (myReferral as any).status === ReferralStatus.LOCKED,
+          acknowledged: !!(myReferral as any).refereeAcknowledged,
+          unlockThresholdKobo: (myReferral as any).unlockThresholdKobo || 0,
+          progressKobo: (myReferral as any).refereeTxnTotalKobo || 0,
+        }
+      : null;
+
     return {
       referralCode,
       points,
+      lockedPoints,
       pointsEarnedLifetime: user?.referralPointsEarned || 0,
       totalReferrals,
-      earnedReferrals,
-      pendingReferrals,
+      // "earned" = unlocked (usable), "pending" = still locked
+      earnedReferrals: unlockedReferrals,
+      pendingReferrals: lockedReferrals,
       pointValueKobo: settings.pointValueKobo,
       pointValue: settings.pointValue,
       pointsPerReferral: settings.pointsPerReferral,
+      refereePoints: settings.refereePoints,
       minConversionPoints: settings.minConversionPoints,
-      minQualifyingAmount: settings.minQualifyingAmount,
+      unlockThreshold: settings.unlockThreshold,
+      unlockThresholdKobo: settings.unlockThresholdKobo,
       convertibleAmountKobo: points * settings.pointValueKobo,
       convertibleAmountNaira: toNaira(points * settings.pointValueKobo),
+      refereeReward,
     };
   }
 
@@ -428,17 +491,18 @@ export class ReferralService {
     const user = await this.usersService.findById(userId);
     const settings = await this.getReferralSettings();
     const referrerId = new Types.ObjectId(userId);
-    const [totalReferrals, earnedReferrals, pendingReferrals] = await Promise.all([
+    const [totalReferrals, unlockedReferrals, lockedReferrals] = await Promise.all([
       this.referralModel.countDocuments({ referrerId }),
-      this.referralModel.countDocuments({ referrerId, status: ReferralStatus.EARNED }),
-      this.referralModel.countDocuments({ referrerId, status: ReferralStatus.PENDING }),
+      this.referralModel.countDocuments({ referrerId, status: ReferralStatus.UNLOCKED }),
+      this.referralModel.countDocuments({ referrerId, status: ReferralStatus.LOCKED }),
     ]);
     const points = user?.referralPoints || 0;
     return {
       totalReferrals,
-      earnedReferrals,
-      pendingReferrals,
+      earnedReferrals: unlockedReferrals,
+      pendingReferrals: lockedReferrals,
       points,
+      lockedPoints: user?.referralPointsLocked || 0,
       pointsEarnedLifetime: user?.referralPointsEarned || 0,
       pointValueKobo: settings.pointValueKobo,
       convertibleAmountKobo: points * settings.pointValueKobo,
@@ -470,13 +534,14 @@ export class ReferralService {
   async getAdminStats() {
     const [totalReferrals, earnedReferrals, pendingReferrals, pointsAgg, walletAgg] = await Promise.all([
       this.referralModel.countDocuments({}),
-      this.referralModel.countDocuments({ status: ReferralStatus.EARNED }),
-      this.referralModel.countDocuments({ status: ReferralStatus.PENDING }),
+      this.referralModel.countDocuments({ status: ReferralStatus.UNLOCKED }),
+      this.referralModel.countDocuments({ status: ReferralStatus.LOCKED }),
       this.userModel.aggregate([
         {
           $group: {
             _id: null,
             outstandingPoints: { $sum: '$referralPoints' },
+            lockedPoints: { $sum: '$referralPointsLocked' },
             lifetimePoints: { $sum: '$referralPointsEarned' },
           },
         },
@@ -493,14 +558,16 @@ export class ReferralService {
 
     const settings = await this.getReferralSettings();
     const outstandingPoints = pointsAgg[0]?.outstandingPoints || 0;
+    const lockedPoints = pointsAgg[0]?.lockedPoints || 0;
 
     return {
       totalReferrals,
-      earnedReferrals,
-      pendingReferrals,
+      earnedReferrals, // unlocked
+      pendingReferrals, // locked
       outstandingPoints,
+      lockedPoints,
       lifetimePointsAwarded: pointsAgg[0]?.lifetimePoints || 0,
-      outstandingLiabilityKobo: outstandingPoints * settings.pointValueKobo,
+      outstandingLiabilityKobo: (outstandingPoints + lockedPoints) * settings.pointValueKobo,
       totalConvertedKobo: walletAgg[0]?.totalKobo || 0,
       settings,
     };
@@ -515,12 +582,12 @@ export class ReferralService {
           _id: '$referrerId',
           totalReferrals: { $sum: 1 },
           earnedReferrals: {
-            $sum: { $cond: [{ $eq: ['$status', ReferralStatus.EARNED] }, 1, 0] },
+            $sum: { $cond: [{ $eq: ['$status', ReferralStatus.UNLOCKED] }, 1, 0] },
           },
           pendingReferrals: {
-            $sum: { $cond: [{ $eq: ['$status', ReferralStatus.PENDING] }, 1, 0] },
+            $sum: { $cond: [{ $eq: ['$status', ReferralStatus.LOCKED] }, 1, 0] },
           },
-          pointsFromReferrals: { $sum: '$pointsAwarded' },
+          pointsFromReferrals: { $sum: '$referrerPoints' },
         },
       },
       {

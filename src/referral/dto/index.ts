@@ -50,11 +50,17 @@ export class ConvertPointsDto {
 // ── Admin: Update referral settings ─────────────────────────
 
 export class UpdateReferralSettingsDto {
-  @ApiProperty({ description: 'Points earned by the referrer per successful referral', example: 10 })
+  @ApiProperty({ description: 'Points the REFERRER earns per referral', example: 10 })
   @IsInt()
   @Min(0)
   @Type(() => Number)
   pointsPerReferral: number;
+
+  @ApiProperty({ description: 'Points the REFEREE (new user) earns for signing up with a code', example: 5 })
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  refereePoints: number;
 
   @ApiProperty({ description: 'Value of 1 referral point in Naira', example: 50 })
   @IsNumber()
@@ -69,16 +75,15 @@ export class UpdateReferralSettingsDto {
   @Type(() => Number)
   minConversionPoints?: number;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      'Minimum transaction (₦) the referred user must make before the referrer earns points. 0 = any successful transaction qualifies.',
-    example: 0,
+      'Total transactions (₦) the referee must make to UNLOCK both bonuses. 0 = unlocks on first transaction.',
+    example: 5000,
   })
-  @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  minQualifyingAmount?: number;
+  unlockThreshold: number;
 }
 
 // ── Admin: Query referral earnings ──────────────────────────

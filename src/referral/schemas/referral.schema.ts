@@ -1,9 +1,11 @@
 /**
  * Referral Schema
  *
- * One record per "referrer → referred user" relationship.
- * A referral starts PENDING at signup and becomes EARNED (points awarded to
- * the referrer) once the referred user completes a successful transaction.
+ * One record per "referrer → referred user" relationship. At signup BOTH the
+ * referrer and the referee receive a bonus, held LOCKED. The bonuses unlock
+ * for both once the referee's cumulative transactions reach the admin-set
+ * threshold (snapshotted here so later setting changes don't affect in-flight
+ * referrals).
  */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
@@ -11,17 +13,17 @@ import { Document, Types } from 'mongoose';
 export type ReferralDocument = Referral & Document;
 
 export enum ReferralStatus {
-  /** Referred user signed up but has not transacted yet. No points awarded. */
-  PENDING = 'PENDING',
-  /** Referred user transacted; points have been awarded to the referrer. */
-  EARNED = 'EARNED',
+  /** Bonuses granted but locked — referee hasn't transacted enough yet. */
+  LOCKED = 'LOCKED',
+  /** Threshold met — bonuses released to both parties. */
+  UNLOCKED = 'UNLOCKED',
   /** Reversed (e.g. fraud / referred account deleted). */
   REVERSED = 'REVERSED',
 }
 
 @Schema({ timestamps: true, collection: 'referrals' })
 export class Referral {
-  /** The user who shared the referral code (receives the points). */
+  /** The user who shared the referral code. */
   @Prop({ type: Types.ObjectId, ref: 'User', required: true, index: true })
   referrerId: Types.ObjectId;
 
@@ -36,22 +38,34 @@ export class Referral {
   @Prop({
     type: String,
     enum: Object.values(ReferralStatus),
-    default: ReferralStatus.PENDING,
+    default: ReferralStatus.LOCKED,
     index: true,
   })
   status: ReferralStatus;
 
-  /** Points awarded to the referrer when this referral qualified (0 until then). */
+  /** Points granted to the referrer for this referral. */
   @Prop({ type: Number, default: 0 })
-  pointsAwarded: number;
+  referrerPoints: number;
 
-  /** When the referred user completed the qualifying transaction. */
+  /** Points granted to the referee (the new user). */
+  @Prop({ type: Number, default: 0 })
+  refereePoints: number;
+
+  /** Cumulative value (kobo) the referee has transacted toward unlocking. */
+  @Prop({ type: Number, default: 0 })
+  refereeTxnTotalKobo: number;
+
+  /** Threshold (kobo) the referee must transact to unlock both bonuses. */
+  @Prop({ type: Number, default: 0 })
+  unlockThresholdKobo: number;
+
+  /** When the bonuses unlocked. */
   @Prop({ type: Date, default: null })
-  qualifiedAt: Date | null;
+  unlockedAt: Date | null;
 
-  /** The transaction that qualified this referral. */
-  @Prop({ type: Types.ObjectId, ref: 'WalletTransaction', default: null })
-  qualifyingTransactionId: Types.ObjectId | null;
+  /** Whether the referee has seen their "you earned a reward" celebration. */
+  @Prop({ type: Boolean, default: false })
+  refereeAcknowledged: boolean;
 
   createdAt: Date;
   updatedAt: Date;

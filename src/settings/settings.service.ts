@@ -148,7 +148,15 @@ const DEFAULT_SETTINGS: DefaultSetting[] = [
     value: 10,
     category: SettingCategory.GENERAL,
     isPublic: true,
-    description: 'Points a referrer earns each time someone signs up with their code',
+    description: 'Points the REFERRER earns per referral',
+    valueType: 'number',
+  },
+  {
+    key: 'referral_referee_points',
+    value: 5,
+    category: SettingCategory.GENERAL,
+    isPublic: true,
+    description: 'Points the REFEREE (new user) earns for signing up with a code',
     valueType: 'number',
   },
   {
@@ -168,12 +176,12 @@ const DEFAULT_SETTINGS: DefaultSetting[] = [
     valueType: 'number',
   },
   {
-    key: 'referral_min_qualifying_amount_kobo',
-    value: 0,
+    key: 'referral_unlock_threshold_kobo',
+    value: 500000,
     category: SettingCategory.GENERAL,
     isPublic: true,
     description:
-      'Minimum transaction (kobo) a referred user must make before the referrer earns points. 0 = any successful transaction qualifies',
+      'Total transactions (kobo) the referee must make to unlock both bonuses. 0 = unlocks on first transaction',
     valueType: 'number',
   },
 ];
