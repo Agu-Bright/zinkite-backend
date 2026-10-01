@@ -281,31 +281,71 @@ export class ReferralService {
   }
 
   /**
-   * Called after a referred user completes a successful transaction. Adds the
-   * amount toward their unlock progress and, once the threshold is reached,
-   * UNLOCKS the bonus for BOTH the referrer and the referee. Idempotent + safe
-   * against concurrent transactions.
+   * Transaction categories that count toward unlocking a referral bonus —
+   * real product activity, excluding wallet funding, withdrawals, refunds and
+   * reward credits.
+   */
+  private static readonly QUALIFYING_CATEGORIES = [
+    'GIFTCARD',
+    'GIFTCARD_BUY',
+    'AIRTIME',
+    'DATA',
+    'ELECTRICITY',
+    'TV',
+  ];
+
+  /** Sum of a referee's successful qualifying transactions (kobo). */
+  private async computeRefereeQualifyingKobo(
+    userId: Types.ObjectId,
+  ): Promise<number> {
+    const agg = await this.connection
+      .collection('wallet_transactions')
+      .aggregate([
+        {
+          $match: {
+            userId,
+            status: 'SUCCESS',
+            category: { $in: ReferralService.QUALIFYING_CATEGORIES },
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ])
+      .toArray();
+    return agg[0]?.total || 0;
+  }
+
+  /**
+   * Called after a referred user completes a successful transaction. Recomputes
+   * their cumulative qualifying volume from the ledger (self-healing — counts
+   * all history, even transactions made before this logic existed) and, once
+   * the threshold is reached, UNLOCKS the bonus for BOTH parties. Idempotent.
    */
   async qualifyReferral(
     userId: string,
-    transactionAmountKobo: number,
+    _transactionAmountKobo: number,
     _transactionId?: Types.ObjectId,
   ): Promise<void> {
-    if (!transactionAmountKobo || transactionAmountKobo <= 0) return;
-
-    // Add this transaction toward the referee's unlock progress.
-    const ref = await this.referralModel.findOneAndUpdate(
-      { referredUserId: new Types.ObjectId(userId), status: ReferralStatus.LOCKED },
-      { $inc: { refereeTxnTotalKobo: transactionAmountKobo } },
-      { new: true },
-    );
+    const refereeId = new Types.ObjectId(userId);
+    const ref = await this.referralModel.findOne({
+      referredUserId: refereeId,
+      status: ReferralStatus.LOCKED,
+    });
     if (!ref) return; // not a locked referee
-    if (ref.refereeTxnTotalKobo < ref.unlockThresholdKobo) return; // not enough yet
+
+    // Recompute the full qualifying total from the ledger (not just this txn).
+    const total = await this.computeRefereeQualifyingKobo(refereeId);
+    if (total !== ref.refereeTxnTotalKobo) {
+      await this.referralModel.updateOne(
+        { _id: ref._id },
+        { $set: { refereeTxnTotalKobo: total } },
+      );
+    }
+    if (total < ref.unlockThresholdKobo) return; // not enough yet
 
     // Claim the unlock atomically.
     const unlocked = await this.referralModel.findOneAndUpdate(
       { _id: ref._id, status: ReferralStatus.LOCKED },
-      { $set: { status: ReferralStatus.UNLOCKED, unlockedAt: new Date() } },
+      { $set: { status: ReferralStatus.UNLOCKED, unlockedAt: new Date(), refereeTxnTotalKobo: total } },
       { new: true },
     );
     if (!unlocked) return; // unlocked by a concurrent call
