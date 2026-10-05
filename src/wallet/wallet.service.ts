@@ -34,7 +34,11 @@ import {
 import { User, UserDocument } from "../users/schemas/user.schema";
 import { PaystackService } from "../paystack/paystack.service";
 import { KorapayService } from "../korapay/korapay.service";
-import { KorapayTransactionType } from "../korapay/schemas/korapay-transaction.schema";
+import {
+  KorapayTransactionType,
+  KorapayTransactionStatus,
+} from "../korapay/schemas/korapay-transaction.schema";
+import { Cron, CronExpression } from "@nestjs/schedule";
 import { ConfigService } from "@nestjs/config";
 import { NotificationsService } from "../notifications/notifications.service";
 import { NotificationType } from "../notifications/schemas/user-notification.schema";
@@ -82,6 +86,19 @@ export interface DebitWalletParams {
 @Injectable()
 export class WalletService {
   private readonly logger = new Logger(WalletService.name);
+  /** Guard so reconciliation sweeps never overlap. */
+  private isReconcilingKoraTopups = false;
+  /**
+   * Hard floor for Kora top-up reconciliation. Every top-up created before this
+   * instant belongs to the pre-existing backlog that was already resolved
+   * manually, so the sweep must NEVER re-verify or re-credit it (doing so would
+   * double-credit users who were already paid). Only top-ups initiated at or
+   * after this moment — i.e. after the backstop went live — are ever in scope.
+   *
+   * Set just after the newest pre-existing pending record (2026-10-02T09:01Z)
+   * so the entire resolved backlog is fenced off; only brand-new top-ups qualify.
+   */
+  private readonly KORA_RECONCILE_NOT_BEFORE = new Date("2026-10-02T14:10:00Z");
 
   constructor(
     @InjectModel(Wallet.name)
@@ -588,6 +605,167 @@ export class WalletService {
     reference: string,
   ): Promise<WalletTransactionDocument | null> {
     return this.transactionModel.findOne({ reference }).exec();
+  }
+
+  // =====================
+  // Kora Top-up Reconciliation (self-healing backstop)
+  // =====================
+
+  /**
+   * Reconciliation backstop for Kora Pay top-ups.
+   *
+   * The webhook and the client-side verify call are the fast paths, but neither
+   * is guaranteed: a webhook can be missed (network blip, a deploy mid-delivery,
+   * a signature/config mismatch that 400s), and the mobile WebView does not
+   * always detect the redirect that triggers client verify — especially for
+   * pay-with-bank. When both miss, the user has paid but their wallet is never
+   * credited. That is the "money sent, wallet not funded" complaint.
+   *
+   * This sweep runs every minute, asks Kora the source-of-truth status of every
+   * still-pending top-up, and credits the ones that succeeded. Crediting is
+   * idempotent — the ledger's unique `reference` index plus an explicit
+   * pre-check guarantee exactly one credit per reference — so it is safe to run
+   * alongside the webhook and client verify even under thousands of concurrent
+   * top-ups. No payment can be credited twice; none can be silently lost.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async reconcileKoraTopups(): Promise<void> {
+    if (this.getPaymentProvider() !== "korapay") return;
+    if (this.isReconcilingKoraTopups) return; // never overlap sweeps
+    this.isReconcilingKoraTopups = true;
+
+    try {
+      const pending = await this.korapayService.getPendingCharges({
+        minAgeMs: 60_000, // give the fast paths ~1 min to win first
+        maxAgeMs: 30 * 24 * 60 * 60_000, // look back up to 30 days
+        notBefore: this.KORA_RECONCILE_NOT_BEFORE, // never touch the old backlog
+        limit: 50, // bound each sweep; a backlog drains over several minutes
+      });
+      if (pending.length === 0) return;
+
+      this.logger.log(
+        `[KoraReconcile] verifying ${pending.length} pending top-up(s)`,
+      );
+
+      let credited = 0;
+      // Process in small concurrent chunks with a short pause between them.
+      // Kora sits behind Cloudflare, which rate-limits bursts (429 / error
+      // 1015) — a gentle cadence keeps a large backlog from tripping it.
+      const CHUNK = 4;
+      const PAUSE_MS = 1200;
+      for (let i = 0; i < pending.length; i += CHUNK) {
+        const chunk = pending.slice(i, i + CHUNK);
+        const results = await Promise.all(
+          chunk.map((txn) =>
+            this.reconcileOneKoraTopup(txn).catch((err) => {
+              this.logger.warn(
+                `[KoraReconcile] ${txn.reference} failed: ${(err as Error).message}`,
+              );
+              return false;
+            }),
+          ),
+        );
+        credited += results.filter(Boolean).length;
+        if (i + CHUNK < pending.length) {
+          await new Promise((r) => setTimeout(r, PAUSE_MS));
+        }
+      }
+
+      if (credited > 0) {
+        this.logger.log(
+          `[KoraReconcile] credited ${credited} previously-missed top-up(s)`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `[KoraReconcile] sweep error: ${(err as Error).message}`,
+      );
+    } finally {
+      this.isReconcilingKoraTopups = false;
+    }
+  }
+
+  /**
+   * Verify one pending Kora top-up against Kora and credit it if it succeeded.
+   * Returns true only when this pass actually credited the wallet.
+   */
+  private async reconcileOneKoraTopup(txn: {
+    reference: string;
+    userId: Types.ObjectId;
+    createdAt: Date;
+  }): Promise<boolean> {
+    const reference = txn.reference;
+
+    // Already on the ledger? Nothing to do — close the record and move on.
+    const existing = await this.findTransactionByReference(reference);
+    if (existing) {
+      await this.korapayService
+        .markChargeStatus(reference, KorapayTransactionStatus.SUCCESS)
+        .catch(() => undefined);
+      return false;
+    }
+
+    const verification = await this.korapayService.verifyCharge(reference);
+
+    if (verification.success) {
+      const amountKobo = toKobo(verification.amount);
+      const userId = txn.userId.toString();
+      try {
+        await this.creditWallet({
+          userId,
+          amount: amountKobo,
+          category: TransactionCategory.TOPUP,
+          source: TransactionSource.KORAPAY_TOPUP,
+          narration: "Wallet top-up via Kora Pay",
+          reference,
+          meta: {
+            korapayReference: reference,
+            channel: verification.channel,
+            reconciled: true, // credited by the sweep, not the webhook
+          },
+        });
+      } catch (error: any) {
+        // The webhook or client verify beat us to it between our pre-check and
+        // the insert — the unique `reference` index rejects the duplicate.
+        if (error?.code === 11000) {
+          await this.korapayService
+            .markChargeStatus(reference, KorapayTransactionStatus.SUCCESS)
+            .catch(() => undefined);
+          return false;
+        }
+        throw error;
+      }
+
+      await this.korapayService
+        .markChargeStatus(reference, KorapayTransactionStatus.SUCCESS)
+        .catch(() => undefined);
+
+      this.sendTopupNotification(userId, amountKobo, reference);
+      this.logger.log(
+        `[KoraReconcile] credited ₦${toNaira(amountKobo).toLocaleString("en-NG")} to ${userId} (ref=${reference})`,
+      );
+      return true;
+    }
+
+    // Not successful at Kora. If it is terminally failed/abandoned and has been
+    // that way a while, close the record so it stops being re-scanned. If Kora
+    // still reports it processing, leave it pending for the next sweep.
+    const status = (verification.status || "").toLowerCase();
+    const ageMs = Date.now() - new Date(txn.createdAt).getTime();
+    const isTerminal =
+      status === "failed" || status === "abandoned" || status === "expired";
+    if (isTerminal && ageMs > 30 * 60_000) {
+      await this.korapayService
+        .markChargeStatus(
+          reference,
+          status === "abandoned"
+            ? KorapayTransactionStatus.ABANDONED
+            : KorapayTransactionStatus.FAILED,
+          verification.status,
+        )
+        .catch(() => undefined);
+    }
+    return false;
   }
 
   // =====================

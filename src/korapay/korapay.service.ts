@@ -458,4 +458,59 @@ export class KorapayService {
     const txn = await this.getTransactionByReference(reference);
     return txn?.status === KorapayTransactionStatus.SUCCESS;
   }
+
+  /**
+   * Fetch pending CHARGE (top-up) records old enough to reconcile but not
+   * ancient. Used by the reconciliation sweep to self-heal any top-up whose
+   * webhook never arrived or failed.
+   *
+   * @param minAgeMs  skip charges newer than this — give the webhook/client-verify
+   *                  fast path time to win first, and avoid racing fresh payments
+   * @param maxAgeMs  ignore charges older than this
+   * @param notBefore hard floor — never return any charge created before this
+   *                  instant. Used to fence off the pre-existing backlog (which
+   *                  was reconciled manually) so the sweep can never re-credit it.
+   * @param limit     max records per sweep (bounds load under a large backlog)
+   */
+  async getPendingCharges(params: {
+    minAgeMs: number;
+    maxAgeMs: number;
+    notBefore: Date;
+    limit: number;
+  }): Promise<KorapayTransactionDocument[]> {
+    const now = Date.now();
+    // Lower bound is the LATER of the rolling window and the hard floor, so the
+    // backlog that predates this backstop is never in scope.
+    const lowerBound = new Date(
+      Math.max(now - params.maxAgeMs, params.notBefore.getTime()),
+    );
+    return this.korapayTxnModel
+      .find({
+        type: KorapayTransactionType.CHARGE,
+        status: KorapayTransactionStatus.PENDING,
+        createdAt: {
+          $lte: new Date(now - params.minAgeMs),
+          $gte: lowerBound,
+        },
+      })
+      .sort({ createdAt: 1 })
+      .limit(params.limit)
+      .exec();
+  }
+
+  /**
+   * Set a charge record's terminal status. The reconciliation sweep calls this
+   * once a top-up is credited (SUCCESS) or Kora confirms it failed/abandoned, so
+   * the record stops being re-scanned.
+   */
+  async markChargeStatus(
+    reference: string,
+    status: KorapayTransactionStatus,
+    gatewayResponse?: string,
+  ): Promise<void> {
+    await this.korapayTxnModel.updateOne(
+      { reference },
+      { status, ...(gatewayResponse ? { gatewayResponse } : {}) },
+    );
+  }
 }
